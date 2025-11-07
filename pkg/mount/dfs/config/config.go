@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/sirrobot01/decypharr/internal/config"
-	"github.com/sirrobot01/decypharr/pkg/manager"
 )
 
 // Configuration constants optimized for streaming
@@ -92,14 +91,14 @@ func DefaultFuseConfig() *FuseConfig {
 }
 
 // ParseFuseConfig converts config.DFS to internal FuseConfig
-func ParseFuseConfig(mountInfo manager.FileInfo) (*FuseConfig, error) {
+func ParseFuseConfig(mountName string) (*FuseConfig, error) {
 	fuseConfig := DefaultFuseConfig()
 	mainCfg := config.Get()
-	cfg := mainCfg.Dfs
+	cfg := mainCfg.Mount.DFS
 	totalDebrids := len(mainCfg.Debrids)
 
-	fuseConfig.CacheDir = filepath.Join(cfg.CacheDir, mountInfo.Name())
-	fuseConfig.MountPath = filepath.Join(cfg.MountPath, mountInfo.Name())
+	fuseConfig.CacheDir = filepath.Join(cfg.CacheDir, mountName)
+	fuseConfig.MountPath = filepath.Join(mainCfg.Mount.MountPath, mountName)
 
 	// Parse durations
 	if cfg.AttrTimeout != "" {

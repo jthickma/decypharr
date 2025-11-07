@@ -181,6 +181,9 @@ class TorrentDashboard {
             },
             'delete': async () => {
                 await this.deleteTorrent(torrent.hash, torrent.category, false);
+            },
+            'delete-debrid': async () => {
+                await this.deleteTorrent(torrent.hash, torrent.category, true);
             }
         };
 
@@ -278,7 +281,7 @@ class TorrentDashboard {
                 <tr class="hover" data-hash="${torrent.info_hash}" data-name="${this.escapeHtml(torrent.name)}" data-category="${this.escapeHtml(torrent.category || '')}">
                     <td>
                         <label class="cursor-pointer">
-                            <input type="checkbox" class="checkbox checkbox-sm checkbox-primary" torrent-select"
+                            <input type="checkbox" class="checkbox checkbox-sm checkbox-primary torrent-select"
                                    data-hash="${torrent.info_hash}" ${isSelected ? 'checked' : ''}>
                         </label>
                     </td>
@@ -311,8 +314,12 @@ class TorrentDashboard {
                     </td>
                     <td>
                         <button class="btn btn-ghost btn-xs text-error"
-                                onclick="window.dashboard.deleteTorrent('${torrent.info_hash}', '${this.escapeAttr(torrent.category || '')}', false)">
+                                onclick="window.dashboard.deleteTorrent('${torrent.info_hash}', '${this.escapeAttr(torrent.category || '')}', false);">
                             <i class="bi bi-trash"></i>
+                        </button>
+                        <button class="btn btn-ghost btn-xs text-error"
+                                onclick="window.dashboard.deleteTorrent('${torrent.info_hash}', '${this.escapeAttr(torrent.category || '')}', true);">
+                            <i class="bi bi-cloud-slash"></i>
                         </button>
                     </td>
                 </tr>
@@ -364,7 +371,7 @@ class TorrentDashboard {
 
         let html = `
             <button class="join-item btn btn-sm ${this.state.currentPage === 1 ? 'btn-disabled' : ''}"
-                    onclick="window.dashboard.goToPage(${this.state.currentPage - 1})">«</button>
+                    onclick="window.dashboard.goToPage(${this.state.currentPage - 1});">«</button>
         `;
 
         for (let i = 1; i <= this.state.totalPages; i++) {
@@ -372,7 +379,7 @@ class TorrentDashboard {
                 (i >= this.state.currentPage - 2 && i <= this.state.currentPage + 2)) {
                 html += `
                     <button class="join-item btn btn-sm ${i === this.state.currentPage ? 'btn-active' : ''}"
-                            onclick="window.dashboard.goToPage(${i})">${i}</button>
+                            onclick="window.dashboard.goToPage(${i});">${i}</button>
                 `;
             } else if (i === this.state.currentPage - 3 || i === this.state.currentPage + 3) {
                 html += `<button class="join-item btn btn-sm btn-disabled">...</button>`;

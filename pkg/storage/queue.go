@@ -91,7 +91,7 @@ func (s *Storage) DeleteWhereQueued(predicate func(*Torrent) bool, cleanup func(
 				return nil // Skip corrupted entries
 			}
 
-			if predicate != nil && predicate(&torr) {
+			if predicate == nil || predicate(&torr) {
 				// Perform cleanup if provided
 				if cleanup != nil {
 					if err := cleanup(&torr); err != nil {
@@ -143,7 +143,7 @@ func (s *Storage) FilterQueued(filter func(*Torrent) bool) ([]*Torrent, error) {
 				return nil // Skip corrupted entries
 			}
 
-			if filter(&torr) {
+			if filter == nil || filter(&torr) {
 				torrents = append(torrents, &torr)
 			}
 			return nil
@@ -168,18 +168,21 @@ func (s *Storage) UpdateWhereQueued(filter func(*Torrent) bool, updateFunc func(
 				continue
 			}
 
-			if filter(&torr) {
-				changed := updateFunc(&torr)
-				if changed {
-					data, err := msgpack.Marshal(&torr)
-					if err != nil {
-						s.logger.Warn().Err(err).Msg("Failed to marshal updated queued torrent")
-						continue
-					}
-					if err := bucket.Put(k, data); err != nil {
-						s.logger.Warn().Err(err).Msg("Failed to update queued torrent")
+			if filter == nil || filter(&torr) {
+				if updateFunc != nil {
+					changed := updateFunc(&torr)
+					if changed {
+						data, err := msgpack.Marshal(&torr)
+						if err != nil {
+							s.logger.Warn().Err(err).Msg("Failed to marshal updated queued torrent")
+							continue
+						}
+						if err := bucket.Put(k, data); err != nil {
+							s.logger.Warn().Err(err).Msg("Failed to update queued torrent")
+						}
 					}
 				}
+
 			}
 		}
 		return nil

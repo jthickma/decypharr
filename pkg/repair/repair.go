@@ -18,7 +18,6 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/sirrobot01/decypharr/internal/config"
 	"github.com/sirrobot01/decypharr/internal/logger"
-	"github.com/sirrobot01/decypharr/internal/request"
 	"github.com/sirrobot01/decypharr/internal/utils"
 	"github.com/sirrobot01/decypharr/pkg/arr"
 	"github.com/sirrobot01/decypharr/pkg/debrid/common"
@@ -338,7 +337,7 @@ func (r *Repair) repair(ctx context.Context, job *storage.Job) error {
 		job.Status = storage.JobFailed
 		job.CompletedAt = time.Now()
 		go func() {
-			if err := request.SendDiscordMessage("repair_failed", "error", job.DiscordContext()); err != nil {
+			if err := r.manager.SendDiscordMessage("repair_failed", "error", job.DiscordContext()); err != nil {
 				r.logger.Error().Msgf("Error sending discord message: %v", err)
 			}
 		}()
@@ -350,7 +349,7 @@ func (r *Repair) repair(ctx context.Context, job *storage.Job) error {
 		job.Status = storage.JobCompleted
 
 		go func() {
-			if err := request.SendDiscordMessage("repair_complete", "success", job.DiscordContext()); err != nil {
+			if err := r.manager.SendDiscordMessage("repair_complete", "success", job.DiscordContext()); err != nil {
 				r.logger.Error().Msgf("Error sending discord message: %v", err)
 			}
 		}()
@@ -364,14 +363,14 @@ func (r *Repair) repair(ctx context.Context, job *storage.Job) error {
 		job.CompletedAt = time.Now() // Mark as completed
 		job.Status = storage.JobCompleted
 		go func() {
-			if err := request.SendDiscordMessage("repair_complete", "success", job.DiscordContext()); err != nil {
+			if err := r.manager.SendDiscordMessage("repair_complete", "success", job.DiscordContext()); err != nil {
 				r.logger.Error().Msgf("Error sending discord message: %v", err)
 			}
 		}()
 	} else {
 		job.Status = storage.JobPending
 		go func() {
-			if err := request.SendDiscordMessage("repair_pending", "pending", job.DiscordContext()); err != nil {
+			if err := r.manager.SendDiscordMessage("repair_pending", "pending", job.DiscordContext()); err != nil {
 				r.logger.Error().Msgf("Error sending discord message: %v", err)
 			}
 		}()

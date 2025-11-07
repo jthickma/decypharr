@@ -107,7 +107,7 @@ func (m *Manager) Sync(ctx context.Context) error {
 
 	// Handle deletions
 	if len(deletedTorrents) > 0 {
-		m.logger.Info().Msgf("Found %d deleted placements", len(deletedTorrents))
+		m.logger.Trace().Msgf("Found %d deleted placements", len(deletedTorrents))
 		for _, deletion := range deletedTorrents {
 			// Format: "infohash:debridName"
 			parts := splitOnce(deletion, ":")
@@ -124,7 +124,7 @@ func (m *Manager) Sync(ctx context.Context) error {
 						}
 					} else {
 						// Update the torr with removed placement
-						if err := m.storage.Update(torr); err != nil {
+						if err := m.AddOrUpdate(torr, nil); err != nil {
 							m.logger.Error().Err(err).Str("infohash", infohash).Msg("Failed to update torr")
 						}
 					}
@@ -134,15 +134,18 @@ func (m *Manager) Sync(ctx context.Context) error {
 	}
 
 	// Store initial cached torrents
-	m.logger.Info().Msgf("Loaded %d torrents from cache", len(cachedTorrents))
+	m.logger.Debug().Msgf("Loaded %d torrents from cache", len(cachedTorrents))
 
 	// Process new torrents
 	if len(newTorrents) > 0 {
-		m.logger.Info().Msgf("Found %d new torrents/placements", len(newTorrents))
+		m.logger.Trace().Msgf("Found %d new torrents/placements", len(newTorrents))
 		if err := m.syncTorrents(ctx, newTorrents, cachedTorrents); err != nil {
 			return fmt.Errorf("failed to sync torrents: %v", err)
 		}
 	}
+
+	// Refresh entries and mounts here
+	go m.RefreshEntries(true)
 
 	m.logger.Info().Msgf("Indexing complete, %d torrents loaded", len(cachedTorrents))
 	return nil
@@ -293,7 +296,9 @@ func (m *Manager) processTorrent(t *types.Torrent, cachedTorrents map[string]*st
 			CreatedAt:        addedOn,
 			UpdatedAt:        time.Now(),
 		}
-		mt.Folder = storage.GetTorrentFolder(mt)
+		if mt.Folder == "" {
+			mt.Folder = storage.GetTorrentFolder(m.config.FolderNaming, mt)
+		}
 		cachedTorrents[t.InfoHash] = mt
 	}
 
@@ -310,10 +315,10 @@ func (m *Manager) processTorrent(t *types.Torrent, cachedTorrents map[string]*st
 		}
 	}
 
-	// Add or update placement for this debrid
+	// AddOrUpdate or update placement for this debrid
 	placement := mt.AddPlacement(t)
 	placement.Progress = t.Progress
-	if t.Status == types.TorrentStatusCompleted {
+	if t.Status == types.TorrentStatusDownloaded {
 		downloadedAt := addedOn
 		placement.DownloadedAt = &downloadedAt
 	}
@@ -329,13 +334,13 @@ func (m *Manager) processTorrent(t *types.Torrent, cachedTorrents map[string]*st
 
 	// If this is the first placement or the only one, make it active
 	if mt.ActiveDebrid == "" || len(mt.Placements) == 1 {
-		if t.Status == types.TorrentStatusCompleted {
+		if t.Status == types.TorrentStatusDownloaded {
 			_ = mt.ActivatePlacement(t.Debrid)
 		}
 	}
 
 	// Save to storage
-	if err := m.storage.Add(mt); err != nil {
+	if err := m.AddOrUpdate(mt, nil); err != nil {
 		return fmt.Errorf("failed to save torrent: %w", err)
 	}
 

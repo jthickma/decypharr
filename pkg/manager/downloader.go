@@ -9,14 +9,13 @@ import (
 	"time"
 
 	"github.com/cavaliergopher/grab/v3"
-	"github.com/sirrobot01/decypharr/internal/request"
 	"github.com/sirrobot01/decypharr/internal/utils"
 	debridTypes "github.com/sirrobot01/decypharr/pkg/debrid/types"
-	torrentpkg "github.com/sirrobot01/decypharr/pkg/storage"
+	"github.com/sirrobot01/decypharr/pkg/storage"
 )
 
 // processDownloadAction implements actual file download from debrid
-func (m *Manager) processDownloadAction(torrent *torrentpkg.Torrent, debridTorrent *debridTypes.Torrent) {
+func (m *Manager) processDownloadAction(torrent *storage.Torrent, debridTorrent *debridTypes.Torrent) {
 	// Get download links
 	var (
 		isMultiSeason bool
@@ -52,7 +51,7 @@ func (m *Manager) processDownloadAction(torrent *torrentpkg.Torrent, debridTorre
 }
 
 // processDownload downloads all files for a torrent with progress tracking
-func (m *Manager) processDownload(torrent *torrentpkg.Torrent, debridTorrent *debridTypes.Torrent) {
+func (m *Manager) processDownload(torrent *storage.Torrent, debridTorrent *debridTypes.Torrent) {
 	var wg sync.WaitGroup
 	m.logger.Info().Msgf("Downloading %d files...", len(debridTorrent.Files))
 
@@ -146,8 +145,7 @@ func (m *Manager) processDownload(torrent *torrentpkg.Torrent, debridTorrent *de
 	m.logger.Info().Msgf("Downloaded all files for %s", debridTorrent.Name)
 }
 
-// processSymlinkAction creates symlinks for the torrent
-func (m *Manager) processSymlinkAction(torrent *torrentpkg.Torrent, debridTorrent *debridTypes.Torrent) {
+func (m *Manager) processSymlinkAction(torrent *storage.Torrent, debridTorrent *debridTypes.Torrent) {
 	var (
 		isMultiSeason bool
 		seasons       []SeasonInfo
@@ -197,7 +195,7 @@ func (m *Manager) processSymlinkAction(torrent *torrentpkg.Torrent, debridTorren
 }
 
 // processSymlink creates symlinks for torrent files
-func (m *Manager) processSymlink(debridTorrent *debridTypes.Torrent, torrent *torrentpkg.Torrent, mountPath string) error {
+func (m *Manager) processSymlink(debridTorrent *debridTypes.Torrent, torrent *storage.Torrent, mountPath string) error {
 	files := debridTorrent.GetFiles()
 	if len(files) == 0 {
 		return fmt.Errorf("no valid files found")
@@ -280,6 +278,7 @@ func (m *Manager) processSymlink(debridTorrent *debridTypes.Torrent, torrent *to
 // grabber downloads a file with progress callback
 func (m *Manager) grabber(client *grab.Client, url, filename string, byterange *[2]int64, progressCallback func(int64, int64)) error {
 	req, err := grab.NewRequest(filename, url)
+	req.NoCreateDirectories = true
 	if err != nil {
 		return err
 	}
@@ -321,7 +320,7 @@ Loop:
 	return resp.Err()
 }
 
-func (m *Manager) markDownloadAsComplete(debridTorrent *debridTypes.Torrent, torrent *torrentpkg.Torrent) {
+func (m *Manager) markDownloadAsComplete(debridTorrent *debridTypes.Torrent, torrent *storage.Torrent) {
 	// Mark as completed
 	downloadedPath := filepath.Join(torrent.SavePath, utils.RemoveExtension(torrent.Name))
 	torrent.MarkAsCompleted(downloadedPath)
@@ -330,7 +329,7 @@ func (m *Manager) markDownloadAsComplete(debridTorrent *debridTypes.Torrent, tor
 	// Send success notification
 	go func() {
 		msg := fmt.Sprintf("Download completed: %s [%s] -> %s", torrent.Name, torrent.Category, downloadedPath)
-		_ = request.SendDiscordMessage("download_complete", "success", msg)
+		_ = m.SendDiscordMessage("download_complete", "success", msg)
 	}()
 
 	// Send callback if configured
@@ -345,7 +344,7 @@ func (m *Manager) markDownloadAsComplete(debridTorrent *debridTypes.Torrent, tor
 	}()
 }
 
-func (m *Manager) markDownloadAsError(debridTorrent *debridTypes.Torrent, torrent *torrentpkg.Torrent, err error) {
+func (m *Manager) markDownloadAsError(debridTorrent *debridTypes.Torrent, torrent *storage.Torrent, err error) {
 	m.logger.Error().Err(err).Str("name", torrent.Name).Msg("Failed to process action")
 	torrent.MarkAsError(err)
 	_ = m.queue.Update(torrent)
@@ -361,7 +360,7 @@ func (m *Manager) markDownloadAsError(debridTorrent *debridTypes.Torrent, torren
 	// Send error notification
 	go func() {
 		msg := fmt.Sprintf("Download failed: %s [%s] - %s", torrent.Name, torrent.Category, err.Error())
-		_ = request.SendDiscordMessage("download_failed", "error", msg)
+		_ = m.SendDiscordMessage("download_failed", "error", msg)
 	}()
 
 	// Send callback if configured
@@ -371,7 +370,7 @@ func (m *Manager) markDownloadAsError(debridTorrent *debridTypes.Torrent, torren
 }
 
 // convertToMultiSeason converts a normal torrent to a multi-season torrents
-func (m *Manager) convertToMultiSeason(torrent *torrentpkg.Torrent, debridTorrent *debridTypes.Torrent, seasons []SeasonInfo) ([]seasonResult, error) {
+func (m *Manager) convertToMultiSeason(torrent *storage.Torrent, debridTorrent *debridTypes.Torrent, seasons []SeasonInfo) ([]seasonResult, error) {
 
 	seasonResults := make([]seasonResult, len(seasons))
 
@@ -393,7 +392,7 @@ func (m *Manager) convertToMultiSeason(torrent *torrentpkg.Torrent, debridTorren
 		seasonDebridTorrent.Files = seasonFiles
 
 		// Create a season-specific managed torrent
-		seasonTorrent := &torrentpkg.Torrent{
+		seasonTorrent := &storage.Torrent{
 			InfoHash:     seasonInfo.InfoHash,
 			Name:         seasonInfo.Name,
 			Size:         size,
@@ -408,7 +407,7 @@ func (m *Manager) convertToMultiSeason(torrent *torrentpkg.Torrent, debridTorren
 			CreatedAt:    time.Now(),
 			UpdatedAt:    time.Now(),
 			AddedOn:      time.Now(),
-			Placements:   make(map[string]*torrentpkg.Placement),
+			Placements:   make(map[string]*storage.Placement),
 		}
 
 		// Copy placement

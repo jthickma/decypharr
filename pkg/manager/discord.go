@@ -1,13 +1,11 @@
-package request
+package manager
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
-	"github.com/sirrobot01/decypharr/internal/config"
 	"io"
-	"net/http"
 	"strings"
+
+	"github.com/sirrobot01/decypharr/internal/httpclient"
 )
 
 type DiscordEmbed struct {
@@ -57,10 +55,8 @@ func getDiscordHeader(event string) string {
 	}
 }
 
-func SendDiscordMessage(event string, status string, message string) error {
-	cfg := config.Get()
-	webhookURL := cfg.DiscordWebhook
-	if webhookURL == "" {
+func (m *Manager) SendDiscordMessage(event string, status string, message string) error {
+	if m.config.DiscordWebhook == "" {
 		return nil
 	}
 
@@ -76,22 +72,14 @@ func SendDiscordMessage(event string, status string, message string) error {
 		},
 	}
 
-	payload, err := json.Marshal(webhook)
-	if err != nil {
-		return fmt.Errorf("failed to marshal discord payload: %v", err)
-	}
-
-	req, err := http.NewRequest(http.MethodPost, webhookURL, bytes.NewReader(payload))
-	if err != nil {
-		return fmt.Errorf("failed to create discord request: %v", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := http.DefaultClient.Do(req)
+	client := httpclient.DefaultClient()
+	resp, err := client.R().
+		SetHeader("Content-Type", "application/json").
+		SetBody(webhook).
+		Post(m.config.DiscordWebhook)
 	if err != nil {
 		return fmt.Errorf("failed to send discord message: %v", err)
 	}
-	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))

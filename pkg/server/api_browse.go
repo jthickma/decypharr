@@ -10,19 +10,19 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/sirrobot01/decypharr/internal/request"
 	"github.com/sirrobot01/decypharr/internal/utils"
 )
 
 // BrowseEntry represents a file or folder in the browse view
 type BrowseEntry struct {
-	Name      string `json:"name"`
-	Path      string `json:"path"`
-	Size      int64  `json:"size"`
-	ModTime   string `json:"mod_time"`
-	IsDir     bool   `json:"is_dir"`
-	InfoHash  string `json:"info_hash,omitempty"`  // For torrent folders
-	CanDelete bool   `json:"can_delete,omitempty"` // Whether this can be deleted
+	Name         string `json:"name"`
+	Path         string `json:"path"`
+	Size         int64  `json:"size"`
+	ModTime      string `json:"mod_time"`
+	IsDir        bool   `json:"is_dir"`
+	InfoHash     string `json:"info_hash,omitempty"`  // For torrent folders
+	CanDelete    bool   `json:"can_delete,omitempty"` // Whether this can be deleted
+	ActiveDebrid string `json:"active_debrid"`
 }
 
 // BrowseResponse is the response for browse requests
@@ -48,17 +48,18 @@ func (s *Server) handleBrowseRoot(w http.ResponseWriter, r *http.Request) {
 		limit = 50
 	}
 
-	_, children := s.manager.MountPaths()
+	children := s.manager.RootEntryChildren()
 
 	// Convert to browse entries
 	entries := make([]BrowseEntry, 0, len(children))
 	for _, child := range children {
 		entries = append(entries, BrowseEntry{
-			Name:    child.Name(),
-			Path:    "/" + child.Name(),
-			Size:    child.Size(),
-			ModTime: child.ModTime().Format("2006-01-02 15:04:05"),
-			IsDir:   child.IsDir(),
+			Name:         child.Name(),
+			Path:         "/" + child.Name(),
+			Size:         child.Size(),
+			ModTime:      child.ModTime().Format("2006-01-02 15:04:05"),
+			IsDir:        child.IsDir(),
+			ActiveDebrid: child.ActiveDebrid(),
 		})
 	}
 
@@ -78,7 +79,7 @@ func (s *Server) handleBrowseRoot(w http.ResponseWriter, r *http.Request) {
 		paginatedEntries = []BrowseEntry{}
 	}
 
-	request.JSONResponse(w, BrowseResponse{
+	utils.JSONResponse(w, BrowseResponse{
 		Entries:    paginatedEntries,
 		Total:      total,
 		Page:       page,
@@ -101,21 +102,24 @@ func (s *Server) handleBrowseMount(w http.ResponseWriter, r *http.Request) {
 		limit = 50
 	}
 
-	currentInfo, children := s.manager.GetSubDir(mount)
+	currentInfo := s.manager.GetMountInfo(mount)
 	if currentInfo == nil {
 		http.Error(w, "Mount not found", http.StatusNotFound)
 		return
 	}
 
+	children := s.manager.GetEntries()
+
 	// Convert to browse entries
 	entries := make([]BrowseEntry, 0, len(children))
 	for _, child := range children {
 		entries = append(entries, BrowseEntry{
-			Name:    child.Name(),
-			Path:    "/" + mount + "/" + child.Name(),
-			Size:    child.Size(),
-			ModTime: child.ModTime().Format("2006-01-02 15:04:05"),
-			IsDir:   child.IsDir(),
+			Name:         child.Name(),
+			Path:         "/" + mount + "/" + child.Name(),
+			Size:         child.Size(),
+			ModTime:      child.ModTime().Format("2006-01-02 15:04:05"),
+			IsDir:        child.IsDir(),
+			ActiveDebrid: child.ActiveDebrid(),
 		})
 	}
 
@@ -135,7 +139,7 @@ func (s *Server) handleBrowseMount(w http.ResponseWriter, r *http.Request) {
 		paginatedEntries = []BrowseEntry{}
 	}
 
-	request.JSONResponse(w, BrowseResponse{
+	utils.JSONResponse(w, BrowseResponse{
 		Entries:    paginatedEntries,
 		Total:      total,
 		Page:       page,
@@ -163,7 +167,7 @@ func (s *Server) handleBrowseGroup(w http.ResponseWriter, r *http.Request) {
 
 	search := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("search")))
 
-	currentInfo, children := s.manager.GetChildren(group)
+	currentInfo, children := s.manager.GetEntryChildren(group)
 	if currentInfo == nil {
 		http.Error(w, "Group not found", http.StatusNotFound)
 		return
@@ -190,13 +194,14 @@ func (s *Server) handleBrowseGroup(w http.ResponseWriter, r *http.Request) {
 		}
 
 		entries = append(entries, BrowseEntry{
-			Name:      child.Name(),
-			Path:      "/" + mount + "/" + group + "/" + child.Name(),
-			Size:      child.Size(),
-			ModTime:   child.ModTime().Format("2006-01-02 15:04:05"),
-			IsDir:     child.IsDir(),
-			InfoHash:  infoHash,
-			CanDelete: canDelete,
+			Name:         child.Name(),
+			Path:         "/" + mount + "/" + group + "/" + child.Name(),
+			Size:         child.Size(),
+			ModTime:      child.ModTime().Format("2006-01-02 15:04:05"),
+			IsDir:        child.IsDir(),
+			InfoHash:     infoHash,
+			CanDelete:    canDelete,
+			ActiveDebrid: child.ActiveDebrid(),
 		})
 	}
 
@@ -216,7 +221,7 @@ func (s *Server) handleBrowseGroup(w http.ResponseWriter, r *http.Request) {
 		paginatedEntries = []BrowseEntry{}
 	}
 
-	request.JSONResponse(w, BrowseResponse{
+	utils.JSONResponse(w, BrowseResponse{
 		Entries:    paginatedEntries,
 		Total:      total,
 		Page:       page,
@@ -245,7 +250,7 @@ func (s *Server) handleBrowseTorrentFiles(w http.ResponseWriter, r *http.Request
 
 	search := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("search")))
 
-	currentInfo, children := s.manager.GetTorrentFilesInFolder(group, torrent)
+	currentInfo, children := s.manager.GetTorrentChildren(torrent)
 	if currentInfo == nil {
 		http.Error(w, "Torrent not found", http.StatusNotFound)
 		return
@@ -266,11 +271,12 @@ func (s *Server) handleBrowseTorrentFiles(w http.ResponseWriter, r *http.Request
 		pathParts = append(pathParts, torrent, child.Name())
 
 		entries = append(entries, BrowseEntry{
-			Name:    child.Name(),
-			Path:    filepath.Join(pathParts...),
-			Size:    child.Size(),
-			ModTime: child.ModTime().Format("2006-01-02 15:04:05"),
-			IsDir:   child.IsDir(),
+			Name:         child.Name(),
+			Path:         filepath.Join(pathParts...),
+			Size:         child.Size(),
+			ModTime:      child.ModTime().Format("2006-01-02 15:04:05"),
+			IsDir:        child.IsDir(),
+			ActiveDebrid: child.ActiveDebrid(),
 		})
 	}
 
@@ -304,13 +310,13 @@ func (s *Server) handleBrowseTorrentFiles(w http.ResponseWriter, r *http.Request
 		ParentDir:  parentPath,
 	}
 
-	// Add torrent info for context menu actions
+	// AddOrUpdate torrent info for context menu actions
 	if torr != nil {
 		w.Header().Set("X-Torrent-Hash", torr.InfoHash)
 		w.Header().Set("X-Torrent-Debrid", torr.ActiveDebrid)
 	}
 
-	request.JSONResponse(w, response, http.StatusOK)
+	utils.JSONResponse(w, response, http.StatusOK)
 }
 
 // handleDeleteBrowseTorrent deletes a torrent by info hash
@@ -321,13 +327,13 @@ func (s *Server) handleDeleteBrowseTorrent(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if err := s.manager.DeleteTorrent(id); err != nil {
+	if err := s.manager.DeleteTorrent(id, true); err != nil {
 		s.logger.Error().Err(err).Str("id", id).Msg("Failed to delete torrent")
 		http.Error(w, "Failed to delete torrent", http.StatusInternalServerError)
 		return
 	}
 
-	request.JSONResponse(w, map[string]interface{}{
+	utils.JSONResponse(w, map[string]interface{}{
 		"success": true,
 		"message": "Torrent deleted successfully",
 	}, http.StatusOK)
@@ -349,13 +355,13 @@ func (s *Server) handleBatchDeleteBrowseTorrents(w http.ResponseWriter, r *http.
 		return
 	}
 
-	if err := s.manager.DeleteTorrents(req.IDs); err != nil {
+	if err := s.manager.DeleteTorrents(req.IDs, true); err != nil {
 		s.logger.Error().Err(err).Msg("Failed to delete torrents")
 		http.Error(w, "Failed to delete torrents", http.StatusInternalServerError)
 		return
 	}
 
-	request.JSONResponse(w, map[string]interface{}{
+	utils.JSONResponse(w, map[string]interface{}{
 		"success": true,
 		"message": "Torrents deleted successfully",
 		"count":   len(req.IDs),
@@ -393,7 +399,7 @@ func (s *Server) handleMoveTorrent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	request.JSONResponse(w, map[string]interface{}{
+	utils.JSONResponse(w, map[string]interface{}{
 		"success": true,
 		"job":     job,
 		"message": "Migration started successfully",
@@ -423,7 +429,7 @@ func (s *Server) handleGetTorrentInfo(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	request.JSONResponse(w, map[string]interface{}{
+	utils.JSONResponse(w, map[string]interface{}{
 		"info_hash":         torrent.InfoHash,
 		"name":              torrent.Name,
 		"size":              torrent.Size,

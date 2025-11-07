@@ -1,7 +1,6 @@
 package arr
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -160,19 +159,14 @@ func (a *Arr) Import(path string, seriesId int, seasons []int) (io.ReadCloser, e
 		query.Add("seriesId", strconv.Itoa(seriesId))
 	}
 	url := "api/v3/manualimport" + "?" + query.Encode()
-	resp, err := a.Request(http.MethodGet, url, nil)
+	var data []ImportResponseSchema
+	_, err := a.Request(http.MethodGet, url, nil, &data)
 	if err != nil {
 		return nil, fmt.Errorf("failed to import, invalid file: %w", err)
 	}
-	defer resp.Body.Close()
-	var data []ImportResponseSchema
-	if err = json.NewDecoder(resp.Body).Decode(&data); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
-	}
-
 	var files []ManualImportRequestFile
 	for _, d := range data {
-		episodesIds := []int{}
+		var episodesIds []int
 		for _, e := range d.Episodes {
 			episodesIds = append(episodesIds, e.Id)
 		}
@@ -199,10 +193,9 @@ func (a *Arr) Import(path string, seriesId int, seasons []int) (io.ReadCloser, e
 	}
 
 	url = "api/v3/command"
-	resp, err = a.Request(http.MethodPost, url, request)
+	resp, err := a.Request(http.MethodPost, url, request, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to import: %w", err)
 	}
-	defer resp.Body.Close()
 	return resp.Body, nil
 }

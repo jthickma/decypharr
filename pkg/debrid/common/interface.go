@@ -19,7 +19,6 @@ type Client interface {
 	GetTorrents() ([]*types.Torrent, error)
 	Config() config.Debrid
 	Logger() zerolog.Logger
-	GetDownloadingStatus() []string
 	RefreshDownloadLinks() error
 	CheckLink(link string) error
 	AccountManager() *account.Manager // Returns the active download account/token

@@ -29,7 +29,6 @@ type Manager struct {
 	clients    *xsync.Map[string, debrid.Client]
 	arr        *arr.Storage
 	logger     zerolog.Logger
-	mu         sync.RWMutex
 	ready      chan struct{}
 	readyOnce  sync.Once
 	mountPaths map[string]*FileInfo
@@ -38,7 +37,7 @@ type Manager struct {
 	migrationJobs   *xsync.Map[string, *storage.SwitcherJob]
 	refreshInterval time.Duration
 
-	config config.Manager
+	config *config.Config
 
 	// Processing workers
 	downloadSem  chan struct{}
@@ -68,12 +67,10 @@ type Manager struct {
 	startTime time.Time
 
 	event *Event
-}
 
-var (
-	instance *Manager
-	once     sync.Once
-)
+	rootInfo *FileInfo
+	entry    *EntryCache
+}
 
 // New creates a new Manager instance
 func New() *Manager {
@@ -81,7 +78,7 @@ func New() *Manager {
 	_logger := logger.New("torrent-manager")
 
 	// Create storage directory
-	dbPath := filepath.Join(cfg.Path, "decypharr.db")
+	dbPath := filepath.Join(config.GetMainPath(), "decypharr.db")
 
 	strg, err := storage.NewStorage(dbPath)
 	if err != nil {
@@ -136,17 +133,17 @@ func New() *Manager {
 	}
 
 	streamClient := &http.Client{
+		Timeout:   0, // No timeout for streaming
 		Transport: transport,
-		Timeout:   0,
 	}
 
-	instance = &Manager{
+	instance := &Manager{
 		storage:              strg,
 		clients:              xsync.NewMap[string, debrid.Client](),
 		logger:               _logger,
 		migrationJobs:        xsync.NewMap[string, *storage.SwitcherJob](),
-		downloadSem:          make(chan struct{}, cfg.Manager.MaxDownloads),
-		config:               cfg.Manager,
+		downloadSem:          make(chan struct{}, cfg.MaxDownloads),
+		config:               cfg,
 		arr:                  arr.NewStorage(),
 		queue:                newQueue(ctx, strg, 1000, cfg.RemoveStalledAfter),
 		mountPaths:           make(map[string]*FileInfo),
@@ -181,8 +178,8 @@ func (m *Manager) init() {
 		cetScheduler, _ = gocron.NewScheduler(gocron.WithGlobalJobOptions(gocron.WithTags("decypharr-cet")))
 	}
 
-	m.config = cfg.Manager
-	m.downloadSem = make(chan struct{}, cfg.Manager.MaxDownloads)
+	m.config = cfg
+	m.downloadSem = make(chan struct{}, cfg.MaxDownloads)
 
 	// Recreate queue with new config
 	m.queue = newQueue(m.ctx, m.storage, 1000, cfg.RemoveStalledAfter)
@@ -194,28 +191,30 @@ func (m *Manager) init() {
 	m.ready = make(chan struct{})
 	m.readyOnce = sync.Once{}
 
-	instance.scheduler = scheduler
-	instance.cetScheduler = cetScheduler
-	instance.migrator = NewMigrator(m.storage)
+	m.scheduler = scheduler
+	m.cetScheduler = cetScheduler
+	m.migrator = NewMigrator(m.storage)
 
-	refreshInterval, err := time.ParseDuration(cfg.Manager.RefreshInterval)
+	refreshInterval, err := time.ParseDuration(cfg.RefreshInterval)
 	if err != nil {
 		refreshInterval = 15 * time.Minute
 	}
-	instance.refreshInterval = refreshInterval
+	m.refreshInterval = refreshInterval
 
 	// initialize debrid clients
-	instance.initDebridClients()
+	m.initDebridClients()
 
 	// Init custom folders
 
-	instance.initCustomFolders()
+	m.initCustomFolders()
 
 	// Initialize fixer
-	instance.fixer = NewFixer(instance)
+	m.fixer = NewFixer(m)
 
 	// Set mount paths
-	instance.setMountPaths()
+	m.setMountPaths()
+
+	m.initEntryCache()
 }
 
 func (m *Manager) migrate() {
@@ -281,10 +280,6 @@ func (m *Manager) sync(ctx context.Context) error {
 	return nil
 }
 
-func (m *Manager) SetMountManager(mountMgr MountManager) {
-	m.mountManager = mountMgr
-}
-
 // Start starts the manager and all its components
 func (m *Manager) Start(ctx context.Context) error {
 	m.startTime = time.Now()
@@ -342,6 +337,10 @@ func (m *Manager) Reset() error {
 	return nil
 }
 
+func (m *Manager) SetMountManager(mountMgr MountManager) {
+	m.mountManager = mountMgr
+}
+
 func (m *Manager) GetStats() (map[string]interface{}, error) {
 	count, err := m.storage.Count()
 	if err != nil {
@@ -387,6 +386,17 @@ func (m *Manager) StartTime() time.Time {
 
 // CRUD operations
 
+func (m *Manager) AddOrUpdate(torrent *storage.Torrent, callback func(t *storage.Torrent)) error {
+	torrent.UpdatedAt = time.Now()
+	if err := m.storage.AddOrUpdate(torrent); err != nil {
+		return err
+	}
+	if callback != nil {
+		go callback(torrent)
+	}
+	return nil
+}
+
 // GetTorrent gets a torrent by name
 func (m *Manager) GetTorrent(infohash string) (*storage.Torrent, error) {
 	return m.storage.Get(infohash)
@@ -401,30 +411,6 @@ func (m *Manager) GetTorrentByName(name string) (*storage.Torrent, error) {
 	return m.storage.GetByName(name)
 }
 
-func (m *Manager) RemoveTorrentFile(torrentName, filename string) error {
-	m.logger.Debug().Str("torrent", torrentName).Msgf("Removing file %s", filename)
-	torr, err := m.GetTorrentByName(torrentName)
-	if err != nil {
-		return fmt.Errorf("torrent %s not found", torrentName)
-	}
-	file, err := torr.GetFile(filename)
-	if err != nil {
-		return fmt.Errorf("file %s not found in torrent %s", filename, torrentName)
-	}
-	file.Deleted = true
-	torr.Files[filename] = file
-
-	// If the torrent has no files left, delete it
-	if len(torr.GetActiveFiles()) == 0 {
-		m.logger.Debug().Msgf("Torrent %s has no files left, deleting it", torr.InfoHash)
-		if err := m.DeleteTorrent(torr.InfoHash); err != nil {
-			return fmt.Errorf("failed to delete torrent %s: %w", torr.InfoHash, err)
-		}
-		return nil
-	}
-	return m.UpdateTorrent(torr)
-}
-
 func (m *Manager) GetTorrents(filter func(*storage.Torrent) bool) ([]*storage.Torrent, error) {
 	return m.storage.List(filter)
 }
@@ -433,34 +419,23 @@ func (m *Manager) GetTorrentsCount() (int, error) {
 	return m.storage.Count()
 }
 
-func (m *Manager) UpdateTorrent(torrent *storage.Torrent) error {
-	torrent.UpdatedAt = time.Now()
-	if err := m.storage.Update(torrent); err != nil {
-		return err
-	}
-	return nil
-}
-
 // DeleteTorrent deletes a torrent by infohash
-func (m *Manager) DeleteTorrent(infohash string) error {
+func (m *Manager) DeleteTorrent(infohash string, removePlacements bool) error {
 	torr, err := m.GetTorrent(infohash)
 	if err != nil {
 		return err
 	}
 	// Delete active placements from debrid clients
-
-	go func() {
-		if err := m.RemoveActivePlacements(torr); err != nil {
-			m.logger.Error().Err(err).Msgf("Failed to remove active placements for torrent %s", infohash)
-		}
-	}()
+	if removePlacements {
+		go m.RemoveTorrentPlacements(torr)
+	}
 
 	return m.storage.Delete(infohash)
 }
 
-func (m *Manager) DeleteTorrents(infohashes []string) error {
+func (m *Manager) DeleteTorrents(infohashes []string, removeFromDebrid bool) error {
 	for _, infohash := range infohashes {
-		if err := m.DeleteTorrent(infohash); err != nil {
+		if err := m.DeleteTorrent(infohash, removeFromDebrid); err != nil {
 			return err
 		}
 	}
@@ -474,8 +449,6 @@ func (m *Manager) GetMigrationJob(jobID string) (*storage.SwitcherJob, error) {
 	}
 	return job, nil
 }
-
-// QBit API Compatibility Methods
 
 // === Queue ===
 
@@ -529,5 +502,5 @@ func (m *Manager) processFromQueue(ctx context.Context) error {
 	if importReq == nil {
 		return nil
 	}
-	return m.AddTorrent(ctx, importReq)
+	return m.AddNewTorrent(ctx, importReq)
 }

@@ -278,14 +278,14 @@ class FileBrowser {
 
         this.refs.fileBrowserList.innerHTML = this.state.entries.map(entry => {
             const icon = entry.is_dir ?
-                '<i class="bi bi-folder-fill text-warning text-lg"></i>' :
-                '<i class="bi bi-file-earmark text-info"></i>';
+                '<i class="bi bi-folder-fill text-warning text-lg transition-colors group-hover:text-warning-content"></i>' :
+                '<i class="bi bi-file-earmark text-info transition-colors group-hover:text-info-content"></i>';
 
             const entryId = entry.info_hash || entry.path;
             const isChecked = this.state.selectedEntries.has(entryId);
 
             return `
-                <tr class="hover cursor-pointer"
+                <tr class="group hover:bg-base-200 transition-colors"
                     data-entry='${JSON.stringify(entry)}'
                     data-entry-id="${this.escapeAttr(entryId)}"
                     oncontextmenu="window.fileBrowser.showContextMenu(event, ${this.escapeAttr(JSON.stringify(entry))});">
@@ -299,7 +299,7 @@ class FileBrowser {
                         </label>
                     </td>
                     <td>${icon}</td>
-                    <td onclick="window.fileBrowser.handleEntryClick(${entry});">
+                    <td onclick="window.fileBrowser.handleEntryClick('${this.escapeJs(entry.path)}', ${entry.is_dir}, '${this.escapeJs(entry.name)}');" class="cursor-pointer hover:text-primary transition-colors">
                         <span class="font-medium">${this.escapeHtml(entry.name)}</span>
                     </td>
                     <td>
@@ -308,6 +308,9 @@ class FileBrowser {
                     <td class="text-xs text-base-content/70">
                         ${entry.mod_time || '-'}
                     </td>
+                    <td>
+                        ${entry.active_debrid ? `<span>${this.escapeHtml(entry.active_debrid)}</span>` : '-'}
+                    </td>
                     <td onclick="event.stopPropagation();">
                         <div class="dropdown dropdown-end">
                             <label tabindex="0" class="btn btn-ghost btn-xs">
@@ -315,15 +318,15 @@ class FileBrowser {
                             </label>
                             <ul tabindex="0" class="dropdown-content menu p-2 shadow bg-base-200 rounded-box w-52 z-50">
                                 ${!entry.is_dir ? `
-                                    <li><a onclick="window.fileBrowser.downloadFile('${this.escapeAttr(entry.path)}', '${this.escapeAttr(entry.name)}')">
+                                    <li><a onclick="window.fileBrowser.downloadFile('${this.escapeJs(entry.path)}', '${this.escapeJs(entry.name)}')">
                                         <i class="bi bi-download"></i> Download
                                     </a></li>
                                 ` : ''}
                                 ${entry.can_delete ? `
-                                    <li><a onclick="window.fileBrowser.showMoveModal('${this.escapeAttr(entry.info_hash)}')">
+                                    <li><a onclick="window.fileBrowser.showMoveModal('${this.escapeJs(entry.info_hash)}')">
                                         <i class="bi bi-arrow-left-right"></i> Move to Debrid
                                     </a></li>
-                                    <li><a onclick="window.fileBrowser.deleteTorrent('${this.escapeAttr(entry.info_hash)}', '${this.escapeAttr(entry.name)}')" class="text-error">
+                                    <li><a onclick="window.fileBrowser.deleteTorrent('${this.escapeJs(entry.info_hash)}', '${this.escapeJs(entry.name)}')" class="text-error">
                                         <i class="bi bi-trash"></i> Delete Torrent
                                     </a></li>
                                 ` : ''}
@@ -389,11 +392,11 @@ class FileBrowser {
         this.refresh();
     }
 
-    handleEntryClick(entry) {
-        if (entry.is_dir) {
-            this.navigate(this.escapeAttr(entry.path));
+    handleEntryClick(path, isDir, name) {
+        if (isDir) {
+            this.navigate(path);
         } else {
-            this.downloadFile(this.escapeAttr(entry.path), this.escapeAttr(entry.name));
+            this.downloadFile(path, name);
         }
     }
 
@@ -409,7 +412,7 @@ class FileBrowser {
         // Show/hide appropriate menu items
         if (!entry.is_dir) {
             this.refs.contextDownload.classList.remove('hidden');
-            this.refs.contextDownload.onclick = () => this.downloadFile(this.escapeAttr(entry.path), this.escapeAttr(entry.name));
+            this.refs.contextDownload.onclick = () => this.downloadFile(entry.path, entry.name);
         } else {
             this.refs.contextDownload.classList.add('hidden');
         }
@@ -557,6 +560,13 @@ class FileBrowser {
         return text.replace(/'/g, '&#39;').replace(/"/g, '&quot;');
     }
 
+    escapeJs(text) {
+        if (typeof text !== 'string') {
+            text = String(text);
+        }
+        return text.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\r/g, '\\r');
+    }
+
     // Multi-select methods
     handleEntrySelect(entryId, checked, entry) {
         if (checked) {
@@ -632,7 +642,7 @@ class FileBrowser {
         }
 
         files.forEach(entry => {
-            this.downloadFile(this.escapeAttr(entry.path), this.escapeAttr(entry.name));
+            this.downloadFile(entry.path, entry.name);
         });
 
         window.createToast(`Downloading ${files.length} file(s)`, 'success');

@@ -3,7 +3,6 @@ package manager
 import (
 	"context"
 	"fmt"
-	"sync"
 	"time"
 
 	"github.com/puzpuzpuz/xsync/v4"
@@ -23,7 +22,6 @@ type Fixer struct {
 	inFlightRepairs    *xsync.Map[string, *FixerRequest] // infohash -> repair request
 	debridOrder        []string                          // Order of debrids to try (from config)
 	maxReinsertRetries int
-	mu                 sync.RWMutex
 }
 
 // FixerRequest tracks an ongoing repair operation
@@ -185,7 +183,9 @@ func (f *Fixer) FixTorrent(ctx context.Context, torrent *storage.Torrent, skipCu
 	// Mark torrent as bad
 	torrent.Bad = true
 	torrent.UpdatedAt = time.Now()
-	_ = f.manager.UpdateTorrent(torrent)
+	_ = f.manager.AddOrUpdate(torrent, func(t *storage.Torrent) {
+		f.manager.RefreshEntries(true)
+	})
 
 	result := &FixResult{
 		Success:       false,
@@ -200,7 +200,7 @@ func (f *Fixer) FixTorrent(ctx context.Context, torrent *storage.Torrent, skipCu
 func (f *Fixer) MoveTorrent(torrent *storage.Torrent, debridName string, reinsert bool) (bool, error) {
 	defer func() {
 		// Save to storage
-		_ = f.manager.UpdateTorrent(torrent)
+		_ = f.manager.AddOrUpdate(torrent, nil) // No need to refresh mounts
 	}()
 
 	client := f.manager.DebridClient(debridName)
@@ -225,7 +225,10 @@ func (f *Fixer) MoveTorrent(torrent *storage.Torrent, debridName string, reinser
 	}
 
 	// Construct magnet
-	magnet := utils.ConstructMagnet(torrent.InfoHash, torrent.Name)
+	magnet, err := utils.GetMagnetInfo(torrent.Magnet, f.manager.config.AlwaysRmTrackerUrls)
+	if err != nil {
+		magnet = utils.ConstructMagnet(torrent.InfoHash, torrent.Name)
+	}
 
 	// Submit to debrid
 	newDebridTorrent := &types.Torrent{
@@ -237,7 +240,7 @@ func (f *Fixer) MoveTorrent(torrent *storage.Torrent, debridName string, reinser
 		DownloadUncached: false,
 	}
 
-	newDebridTorrent, err := client.SubmitMagnet(newDebridTorrent)
+	newDebridTorrent, err = client.SubmitMagnet(newDebridTorrent)
 	if err != nil {
 		return false, fmt.Errorf("failed to submit magnet: %w", err)
 	}
@@ -323,7 +326,7 @@ func (f *Fixer) ReInsertTorrent(torrent *storage.Torrent) (bool, error) {
 func (f *Fixer) buildAttemptOrder(torrent *storage.Torrent, skipCurrent bool) []string {
 	order := make([]string, 0, len(f.debridOrder))
 
-	// Add other debrids in config order
+	// AddOrUpdate other debrids in config order
 	for _, debridName := range f.debridOrder {
 		if debridName == torrent.ActiveDebrid && skipCurrent {
 			continue

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -28,11 +29,12 @@ type Mount struct {
 	unmountFunc func()
 	manager     *manager.Manager
 	name        string
+	ready       atomic.Bool
 }
 
 // NewMount creates a new FUSE filesystem
-func NewMount(mountInfo manager.FileInfo, mgr *manager.Manager) (*Mount, error) {
-	fuseConfig, err := fuseconfig.ParseFuseConfig(mountInfo)
+func NewMount(mountName string, mgr *manager.Manager) (*Mount, error) {
+	fuseConfig, err := fuseconfig.ParseFuseConfig(mountName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse FUSE config: %w", err)
 	}
@@ -43,9 +45,9 @@ func NewMount(mountInfo manager.FileInfo, mgr *manager.Manager) (*Mount, error) 
 	mount := &Mount{
 		vfs:     cacheManager,
 		config:  fuseConfig,
-		logger:  logger.New("dfs").With().Str("mount", mountInfo.Name()).Logger(),
+		logger:  logger.New("dfs").With().Str("mount", mountName).Logger(),
 		manager: mgr,
-		name:    mountInfo.Name(),
+		name:    mountName,
 	}
 	now := time.Now()
 	mount.rootDir = NewDir(cacheManager, mgr, "", LevelRoot, uint64(now.Unix()), mount.config, mount.logger)
@@ -176,6 +178,7 @@ func (m *Mount) Start(ctx context.Context) error {
 	}
 
 	m.unmountFunc = umount
+	m.ready.Store(true)
 	m.logger.Info().
 		Str("mount_path", m.config.MountPath).
 		Msg("FUSE filesystem mounted successfully")
@@ -219,6 +222,10 @@ func (m *Mount) Stats() map[string]interface{} {
 
 func (m *Mount) Type() string {
 	return "dfs"
+}
+
+func (m *Mount) IsReady() bool {
+	return m.ready.Load()
 }
 
 // Getattr returns root directory attributes
@@ -289,7 +296,7 @@ func (m *Mount) refreshDirectory(name string) {
 	}
 	dir, ok := child.node.(*Dir)
 	if !ok {
-		m.logger.Warn().Str("dir", name).Msg("Path is not a directory")
+		m.logger.Warn().Str("dir", name).Msg("MountPath is not a directory")
 		return
 	}
 	dir.Refresh()

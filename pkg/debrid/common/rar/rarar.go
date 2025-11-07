@@ -14,38 +14,30 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/imroc/req/v3"
 )
 
 // Constants from the Python code
 var (
-	// Chunk sizes
+	// DefaultChunkSize Chunk sizes
 	DefaultChunkSize = 4096
 	HttpChunkSize    = 32768
 	MaxSearchSize    = 1 << 20 // 1MB
 
-	// RAR marker and block types
+	// Rar3Marker RAR marker and block types
 	Rar3Marker  = []byte{0x52, 0x61, 0x72, 0x21, 0x1A, 0x07, 0x00}
 	BlockFile   = byte(0x74)
 	BlockHeader = byte(0x73)
 	BlockMarker = byte(0x72)
 	BlockEnd    = byte(0x7B)
 
-	// Header flags
+	// FlagDirectory Header flags
 	FlagDirectory      = 0xE0
 	FlagHasHighSize    = 0x100
 	FlagHasUnicodeName = 0x200
 	FlagHasData        = 0x8000
 )
-
-// Compression methods
-var CompressionMethods = map[byte]string{
-	0x30: "Store",
-	0x31: "Fastest",
-	0x32: "Fast",
-	0x33: "Normal",
-	0x34: "Good",
-	0x35: "Best",
-}
 
 // Error definitions
 var (
@@ -70,11 +62,10 @@ func (f *File) ByteRange() *[2]int64 {
 }
 
 func NewHttpFile(url string) (*HttpFile, error) {
-	client := &http.Client{}
 	file := &HttpFile{
 		URL:        url,
 		Position:   0,
-		Client:     client,
+		client:     req.C(),
 		MaxRetries: 3,
 		RetryDelay: time.Second,
 	}
@@ -117,11 +108,10 @@ func (f *HttpFile) doWithRetry(operation func() (interface{}, error)) (interface
 // getFileSize gets the total file size from the server
 func (f *HttpFile) getFileSize() (int64, error) {
 	result, err := f.doWithRetry(func() (interface{}, error) {
-		resp, err := f.Client.Head(f.URL)
+		resp, err := f.client.R().Head(f.URL)
 		if err != nil {
 			return int64(0), fmt.Errorf("%w: %v", ErrNetworkError, err)
 		}
-		defer resp.Body.Close()
 
 		if resp.StatusCode != http.StatusOK {
 			return int64(0), fmt.Errorf("%w: unexpected status code: %d", ErrNetworkError, resp.StatusCode)
@@ -169,20 +159,21 @@ func (f *HttpFile) ReadAt(p []byte, off int64) (n int, err error) {
 
 	result, err := f.doWithRetry(func() (interface{}, error) {
 		// Create HTTP request with Range header
-		req, err := http.NewRequest("GET", f.URL, nil)
-		if err != nil {
-			return 0, fmt.Errorf("%w: %v", ErrNetworkError, err)
-		}
-
 		end := off + size - 1
-		req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", off, end))
 
 		// Make the request
-		resp, err := f.Client.Do(req)
+		resp, err := f.client.R().
+			SetHeader("Range", fmt.Sprintf("bytes=%d-%d", off, end)).
+			Get(f.URL)
 		if err != nil {
 			return 0, fmt.Errorf("%w: %v", ErrNetworkError, err)
 		}
-		defer resp.Body.Close()
+		defer func(Body io.ReadCloser) {
+			err := Body.Close()
+			if err != nil {
+				fmt.Printf("warning: failed to close response body: %v\n", err)
+			}
+		}(resp.Body)
 
 		// Handle response
 		switch resp.StatusCode {
@@ -328,7 +319,7 @@ func decodeUnicode(asciiStr string, unicodeData []byte) string {
 		return asciiStr
 	}
 
-	result := []rune{}
+	var result []rune
 	asciiPos := 0
 	dataPos := 0
 	highByte := byte(0)
@@ -429,121 +420,111 @@ func (r *Reader) readFiles() error {
 
 	pos += int64(headSize) // Skip archive header
 
-	// Track whether we've found the end marker
-	foundEndMarker := false
-
 	// Process file entries
-	for !foundEndMarker {
-		headerData, err := r.readBytes(pos, 7)
-		if err != nil {
-			// Don't stop on EOF, might be temporary network error
-			// For definitive errors, return the error
-			if !errors.Is(err, io.EOF) && !errors.Is(err, ErrNetworkError) {
-				return fmt.Errorf("error reading block header: %w", err)
-			}
+	headerData, err = r.readBytes(pos, 7)
+	if err != nil {
+		// Don't stop on EOF, might be temporary network error
+		// For definitive errors, return the error
+		if !errors.Is(err, io.EOF) && !errors.Is(err, ErrNetworkError) {
+			return fmt.Errorf("error reading block header: %w", err)
+		}
 
-			// If we get EOF or network error, retry a few times
-			retryCount := 0
-			maxRetries := 3
-			retryDelay := time.Second
+		// If we get EOF or network error, retry a few times
+		retryCount := 0
+		maxRetries := 3
+		retryDelay := time.Second
 
-			for retryCount < maxRetries {
-				time.Sleep(retryDelay * time.Duration(1<<uint(retryCount)))
-				retryCount++
+		for retryCount < maxRetries {
+			time.Sleep(retryDelay * time.Duration(1<<uint(retryCount)))
+			retryCount++
 
-				headerData, err = r.readBytes(pos, 7)
-				if err == nil && len(headerData) >= 7 {
-					break // Successfully got data
-				}
-			}
-
-			if len(headerData) < 7 {
-				return fmt.Errorf("failed to read block header after retries: %w", err)
+			headerData, err = r.readBytes(pos, 7)
+			if err == nil && len(headerData) >= 7 {
+				break // Successfully got data
 			}
 		}
 
 		if len(headerData) < 7 {
-			return fmt.Errorf("incomplete block header at position %d", pos)
+			return fmt.Errorf("failed to read block header after retries: %w", err)
+		}
+	}
+
+	if len(headerData) < 7 {
+		return fmt.Errorf("incomplete block header at position %d", pos)
+	}
+
+	headType = headerData[2]
+	headFlags := int(binary.LittleEndian.Uint16(headerData[3:5]))
+	headSize = int(binary.LittleEndian.Uint16(headerData[5:7]))
+
+	if headType == BlockEnd {
+		// End of archive
+		return nil
+	}
+
+	if headType == BlockFile {
+		// Get complete header data
+		completeHeader, err := r.readBytes(pos, headSize)
+		if err != nil || len(completeHeader) < headSize {
+			// Retry logic for incomplete headers
+			retryCount := 0
+			maxRetries := 3
+			retryDelay := time.Second
+
+			for retryCount < maxRetries && (err != nil || len(completeHeader) < headSize) {
+				time.Sleep(retryDelay * time.Duration(1<<uint(retryCount)))
+				retryCount++
+
+				completeHeader, err = r.readBytes(pos, headSize)
+				if err == nil && len(completeHeader) >= headSize {
+					break // Successfully got data
+				}
+			}
+
+			if len(completeHeader) < headSize {
+				return fmt.Errorf("failed to read complete file header after retries: %w", err)
+			}
 		}
 
-		headType := headerData[2]
-		headFlags := int(binary.LittleEndian.Uint16(headerData[3:5]))
-		headSize := int(binary.LittleEndian.Uint16(headerData[5:7]))
-
-		if headType == BlockEnd {
-			// End of archive
-			foundEndMarker = true
-			break
+		fileInfo, err := r.parseFileHeader(completeHeader, pos)
+		if err == nil && fileInfo != nil {
+			r.Files = append(r.Files, fileInfo)
+			pos = fileInfo.NextOffset
+		} else {
+			pos += int64(headSize)
 		}
+	} else {
+		// Skip non-file block
+		pos += int64(headSize)
 
-		if headType == BlockFile {
-			// Get complete header data
-			completeHeader, err := r.readBytes(pos, headSize)
-			if err != nil || len(completeHeader) < headSize {
-				// Retry logic for incomplete headers
+		// Skip data if present
+		if headFlags&FlagHasData != 0 {
+			// Read data size
+			sizeData, err := r.readBytes(pos-4, 4)
+			if err != nil || len(sizeData) < 4 {
+				// Retry logic for data size read errors
 				retryCount := 0
 				maxRetries := 3
 				retryDelay := time.Second
 
-				for retryCount < maxRetries && (err != nil || len(completeHeader) < headSize) {
+				for retryCount < maxRetries && (err != nil || len(sizeData) < 4) {
 					time.Sleep(retryDelay * time.Duration(1<<uint(retryCount)))
 					retryCount++
 
-					completeHeader, err = r.readBytes(pos, headSize)
-					if err == nil && len(completeHeader) >= headSize {
+					sizeData, err = r.readBytes(pos-4, 4)
+					if err == nil && len(sizeData) >= 4 {
 						break // Successfully got data
 					}
 				}
 
-				if len(completeHeader) < headSize {
-					return fmt.Errorf("failed to read complete file header after retries: %w", err)
+				if len(sizeData) < 4 {
+					return fmt.Errorf("failed to read data size after retries: %w", err)
 				}
 			}
 
-			fileInfo, err := r.parseFileHeader(completeHeader, pos)
-			if err == nil && fileInfo != nil {
-				r.Files = append(r.Files, fileInfo)
-				pos = fileInfo.NextOffset
-			} else {
-				pos += int64(headSize)
-			}
-		} else {
-			// Skip non-file block
-			pos += int64(headSize)
-
-			// Skip data if present
-			if headFlags&FlagHasData != 0 {
-				// Read data size
-				sizeData, err := r.readBytes(pos-4, 4)
-				if err != nil || len(sizeData) < 4 {
-					// Retry logic for data size read errors
-					retryCount := 0
-					maxRetries := 3
-					retryDelay := time.Second
-
-					for retryCount < maxRetries && (err != nil || len(sizeData) < 4) {
-						time.Sleep(retryDelay * time.Duration(1<<uint(retryCount)))
-						retryCount++
-
-						sizeData, err = r.readBytes(pos-4, 4)
-						if err == nil && len(sizeData) >= 4 {
-							break // Successfully got data
-						}
-					}
-
-					if len(sizeData) < 4 {
-						return fmt.Errorf("failed to read data size after retries: %w", err)
-					}
-				}
-
-				dataSize := int64(binary.LittleEndian.Uint32(sizeData))
-				pos += dataSize
-			}
+			dataSize := int64(binary.LittleEndian.Uint32(sizeData))
+			pos += dataSize
 		}
-	}
-
-	if !foundEndMarker {
-		return fmt.Errorf("end marker not found in archive")
 	}
 
 	return nil

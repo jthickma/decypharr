@@ -1,4 +1,4 @@
-package rclone
+package external
 
 import (
 	"encoding/json"
@@ -13,7 +13,6 @@ type Stats struct {
 	Ready     bool                     `json:"ready"`
 	Core      rclone.CoreStatsResponse `json:"core"`
 	Memory    rclone.MemoryStats       `json:"memory"`
-	Mounts    map[string]*MountInfo    `json:"mounts"`
 	Bandwidth rclone.BandwidthStats    `json:"bandwidth"`
 	Version   rclone.VersionResponse   `json:"version"`
 }

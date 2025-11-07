@@ -6,21 +6,6 @@ import (
 	"time"
 )
 
-// checkMountHealth checks if a specific mount is healthy
-func (m *Mount) checkMountHealth() bool {
-	// Try to list the root directory of the mount
-	req := RCRequest{
-		Command: "operations/list",
-		Args: map[string]interface{}{
-			"fs":     fmt.Sprintf("%s:", m.Provider),
-			"remote": "",
-		},
-	}
-
-	_, err := makeRequest(req, true)
-	return err == nil
-}
-
 // RecoverMount attempts to recover a failed mount
 func (m *Mount) RecoverMount() error {
 	mountInfo := m.getMountInfo()
@@ -50,7 +35,6 @@ func (m *Mount) RecoverMount() error {
 
 // MonitorMounts continuously monitors mount health and attempts recovery
 func (m *Mount) MonitorMounts(ctx context.Context) {
-
 	ticker := time.NewTicker(30 * time.Second) // Check every 30 seconds
 	defer ticker.Stop()
 
@@ -67,8 +51,8 @@ func (m *Mount) MonitorMounts(ctx context.Context) {
 
 // performMountHealthCheck checks and attempts to recover unhealthy mounts
 func (m *Mount) performMountHealthCheck() {
-	if !m.checkMountHealth() {
-		m.logger.Warn().Msg("Mount health check failed, attempting recovery")
+	if err := m.client.CheckMountHealth(fmt.Sprintf("%s:", m.Provider)); err != nil {
+		m.logger.Warn().Err(err).Msg("Mount health check failed, attempting recovery")
 
 		// Mark mount as unhealthy
 		mountInfo := m.getMountInfo()

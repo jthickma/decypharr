@@ -1,12 +1,10 @@
 package account
 
 import (
-	"fmt"
-	"net/http"
 	"sync/atomic"
 
+	"github.com/imroc/req/v3"
 	"github.com/puzpuzpuz/xsync/v4"
-	"github.com/sirrobot01/decypharr/internal/request"
 	"github.com/sirrobot01/decypharr/pkg/debrid/types"
 )
 
@@ -18,7 +16,7 @@ type Account struct {
 	Token       string                                 `json:"token"`
 	TrafficUsed atomic.Int64                           `json:"traffic_used"` // Traffic used in bytes
 	Username    string                                 `json:"username"`     // Username for the account
-	httpClient  *request.Client
+	httpClient  *req.Client
 
 	// Account reactivation tracking
 	DisableCount atomic.Int32 `json:"disable_count"`
@@ -31,7 +29,7 @@ func (a *Account) Equals(other *Account) bool {
 	return a.Token == other.Token && a.Debrid == other.Debrid
 }
 
-func (a *Account) Client() *request.Client {
+func (a *Account) Client() *req.Client {
 	return a.httpClient
 }
 
@@ -84,36 +82,4 @@ func (a *Account) MarkDisabled() {
 func (a *Account) Reset() {
 	a.DisableCount.Store(0)
 	a.Disabled.Store(false)
-}
-
-func (a *Account) CheckBandwidth() error {
-	// Get a one of the download links to check if the account is still valid
-	downloadLink := ""
-	a.links.Range(func(key string, dl types.DownloadLink) bool {
-		if dl.DownloadLink != "" {
-			downloadLink = dl.DownloadLink
-			return false
-		}
-		return true
-	})
-	if downloadLink == "" {
-		return fmt.Errorf("no download link found")
-	}
-
-	// Let's check the download link status
-	req, err := http.NewRequest(http.MethodGet, downloadLink, nil)
-	if err != nil {
-		return err
-	}
-	// Use a simple client
-	client := http.DefaultClient
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
-		return fmt.Errorf("account check failed with status code %d", resp.StatusCode)
-	}
-	return nil
 }

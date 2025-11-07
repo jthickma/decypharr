@@ -66,7 +66,7 @@ class SetupWizard {
         }
 
         // Populate download folder
-        if (config.manager?.download_folder) {
+        if (config.download_folder) {
             document.getElementById('download-folder').value = config.manager.download_folder;
         }
 
@@ -97,6 +97,7 @@ class SetupWizard {
         document.getElementById('mount-next-btn').addEventListener('click', () => this.handleMountNext());
         document.getElementById('mount-type-dfs').addEventListener('change', () => this.toggleMountOptions());
         document.getElementById('mount-type-rclone').addEventListener('change', () => this.toggleMountOptions());
+        document.getElementById('mount-type-external').addEventListener('change', () => this.toggleMountOptions());
         document.getElementById('overview-back-btn').addEventListener('click', () => this.goToStep(4));
         document.getElementById('finish-btn').addEventListener('click', () => this.handleFinish());
     }
@@ -263,6 +264,7 @@ class SetupWizard {
 
     toggleMountOptions() {
         const isDFS = document.getElementById('mount-type-dfs').checked;
+        const isRclone = document.getElementById('mount-type-rclone').checked;
         const rcloneOptions = document.getElementById('rclone-options');
 
         if (isDFS) {

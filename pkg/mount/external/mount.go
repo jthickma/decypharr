@@ -4,38 +4,44 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"net/http"
 	"strings"
+	"time"
 
+	"github.com/imroc/req/v3"
 	"github.com/rs/zerolog"
 	"github.com/sirrobot01/decypharr/internal/config"
 	"github.com/sirrobot01/decypharr/internal/logger"
+	"github.com/sirrobot01/decypharr/pkg/manager"
 )
 
 type Mount struct {
-	config     config.Debrid
-	httpClient *http.Client
+	config     config.ExternalRclone
+	httpClient *req.Client
 	logger     zerolog.Logger
+	name       string
 }
 
-func NewMount(debridConfig config.Debrid) (*Mount, error) {
-	return &Mount{
-		config:     debridConfig,
-		httpClient: http.DefaultClient,
-		logger:     logger.New("rclone-external"),
-	}, nil
+func NewMount(mountName string, mgr *manager.Manager) (*Mount, error) {
+	cfg := config.Get().Mount.ExternalRclone
+	// Create HTTP client
+	httpClient := req.C().
+		SetTimeout(1*time.Minute).
+		SetCommonBasicAuth(cfg.RCUsername, cfg.RCPassword).
+		SetCommonHeader("Content-Type", "application/x-www-form-urlencoded")
+
+	m := &Mount{
+		config:     config.Get().Mount.ExternalRclone,
+		httpClient: httpClient,
+		logger:     logger.New("external").With().Str("mount", mountName).Logger(),
+		name:       mountName,
+	}
+
+	mgr.SetEventHandlers(manager.NewEventHandlers(m))
+	return m, nil
 }
 
 func (m *Mount) Start(ctx context.Context) error {
 	return nil
-}
-
-func (m *Mount) Stats() map[string]interface{} {
-	return map[string]interface{}{
-		"enabled": true,
-		"ready":   true,
-		"type":    m.Type(),
-	}
 }
 
 func (m *Mount) Stop() error {
@@ -49,7 +55,7 @@ func (m *Mount) Refresh(dirs []string) error {
 func (m *Mount) refresh(dirs []string) error {
 	cfg := m.config
 
-	if cfg.RcUrl == "" {
+	if cfg.RCUrl == "" {
 		return nil
 	}
 	// Create form data
@@ -81,21 +87,12 @@ func (m *Mount) buildRcloneRequestData(dirs []string) string {
 }
 
 func (m *Mount) sendRcloneRequest(endpoint, data string) error {
-	req, err := http.NewRequest("POST", fmt.Sprintf("%s/%s", m.config.RcUrl, endpoint), strings.NewReader(data))
+	resp, err := m.httpClient.R().
+		SetBody(data).
+		Post("/" + endpoint)
 	if err != nil {
 		return err
 	}
-
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	if m.config.RcUser != "" && m.config.RcPass != "" {
-		req.SetBasicAuth(m.config.RcUser, m.config.RcPass)
-	}
-	resp, err := m.httpClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))

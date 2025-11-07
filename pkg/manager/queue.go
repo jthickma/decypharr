@@ -14,6 +14,7 @@ import (
 	"github.com/sirrobot01/decypharr/internal/logger"
 	"github.com/sirrobot01/decypharr/internal/utils"
 	"github.com/sirrobot01/decypharr/pkg/arr"
+	debridTypes "github.com/sirrobot01/decypharr/pkg/debrid/types"
 	"github.com/sirrobot01/decypharr/pkg/storage"
 )
 
@@ -134,7 +135,7 @@ func (q *Queue) DeleteWhere(category, state string, hashes []string, cleanup fun
 func (q *Queue) DeleteStalled() error {
 	cutoff := time.Now().Add(-q.removeStalledAfter)
 	return q.storage.DeleteWhereQueued(func(t *storage.Torrent) bool {
-		return t.AddedOn.Before(cutoff) && t.Status != "downloading" && t.Seeders == 0 && t.Progress == 0
+		return t.AddedOn.Before(cutoff) && t.Status != debridTypes.TorrentStatusDownloading && t.Seeders == 0 && t.Progress == 0
 	}, nil)
 }
 
@@ -149,10 +150,10 @@ func (q *Queue) ListFilterFunc(category, state string, hashes []string) func(*st
 		for _, h := range hashes {
 			hashSet[h] = struct{}{}
 		}
-
 	}
+
 	var filterFunc func(*storage.Torrent) bool
-	if category != "" || len(hashSet) != 0 || state != "" {
+	if category != "" || len(hashes) != 0 || state != "" {
 		filterFunc = func(t *storage.Torrent) bool {
 			if category != "" && t.Category != category {
 				return false
@@ -172,8 +173,8 @@ func (q *Queue) ListFilterFunc(category, state string, hashes []string) func(*st
 }
 
 func (q *Queue) ListFilter(category, state string, hashes []string, sortBy string, reverse bool) []*storage.Torrent {
-
-	torrents, err := q.storage.FilterQueued(q.ListFilterFunc(category, state, hashes))
+	filterFunc := q.ListFilterFunc(category, state, hashes)
+	torrents, err := q.storage.FilterQueued(filterFunc)
 	if err != nil {
 		// return empty list on error
 		return []*storage.Torrent{}
@@ -193,7 +194,7 @@ func (q *Queue) ListFilter(category, state string, hashes []string, sortBy strin
 				return torrents[i].Size < torrents[j].Size
 			case "added_on":
 				return torrents[i].AddedOn.Before(torrents[j].AddedOn)
-			case "completed":
+			case "completed", "downloaded":
 				return torrents[i].CompletedAt.Before(*torrents[j].CompletedAt)
 			case "progress":
 				return torrents[i].Progress < torrents[j].Progress
@@ -278,7 +279,7 @@ func (q *Queue) DeleteRequestWhere(predicate func(*ImportRequest) bool) int {
 
 	deleted := 0
 	for i := len(q.queue) - 1; i >= 0; i-- {
-		if predicate(q.queue[i]) {
+		if predicate == nil || predicate(q.queue[i]) {
 			q.queue = append(q.queue[:i], q.queue[i+1:]...)
 			deleted++
 		}

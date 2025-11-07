@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	"github.com/sirrobot01/decypharr/internal/config"
-	"github.com/sirrobot01/decypharr/internal/request"
+	"github.com/sirrobot01/decypharr/internal/utils"
 	"github.com/sirrobot01/decypharr/pkg/arr"
 	"github.com/sirrobot01/decypharr/pkg/storage"
 )
@@ -47,7 +47,7 @@ func (q *QBit) handlePreferences(w http.ResponseWriter, r *http.Request) {
 	preferences.SavePath = q.DownloadFolder
 	preferences.TempPath = filepath.Join(q.DownloadFolder, "temp")
 
-	request.JSONResponse(w, preferences, http.StatusOK)
+	utils.JSONResponse(w, preferences, http.StatusOK)
 }
 
 func (q *QBit) handleBuildInfo(w http.ResponseWriter, r *http.Request) {
@@ -59,7 +59,7 @@ func (q *QBit) handleBuildInfo(w http.ResponseWriter, r *http.Request) {
 		Qt:         "5.15.2",
 		Zlib:       "1.2.11",
 	}
-	request.JSONResponse(w, res, http.StatusOK)
+	utils.JSONResponse(w, res, http.StatusOK)
 }
 
 func (q *QBit) handleShutdown(w http.ResponseWriter, r *http.Request) {
@@ -80,7 +80,7 @@ func (q *QBit) handleTorrentsInfo(w http.ResponseWriter, r *http.Request) {
 	for i, t := range torrents {
 		qbitTorrents[i] = convertToQBitTorrentTorrent(t)
 	}
-	request.JSONResponse(w, qbitTorrents, http.StatusOK)
+	utils.JSONResponse(w, qbitTorrents, http.StatusOK)
 }
 
 func (q *QBit) handleTorrentsAdd(w http.ResponseWriter, r *http.Request) {
@@ -236,7 +236,7 @@ func (q *QBit) handleCategories(w http.ResponseWriter, r *http.Request) {
 			SavePath: path,
 		}
 	}
-	request.JSONResponse(w, categories, http.StatusOK)
+	utils.JSONResponse(w, categories, http.StatusOK)
 }
 
 func (q *QBit) handleCreateCategory(w http.ResponseWriter, r *http.Request) {
@@ -254,7 +254,7 @@ func (q *QBit) handleCreateCategory(w http.ResponseWriter, r *http.Request) {
 
 	q.Categories = append(q.Categories, name)
 
-	request.JSONResponse(w, nil, http.StatusOK)
+	utils.JSONResponse(w, nil, http.StatusOK)
 }
 
 func (q *QBit) handleTorrentProperties(w http.ResponseWriter, r *http.Request) {
@@ -268,7 +268,7 @@ func (q *QBit) handleTorrentProperties(w http.ResponseWriter, r *http.Request) {
 	}
 
 	properties := q.GetTorrentProperties(torr)
-	request.JSONResponse(w, properties, http.StatusOK)
+	utils.JSONResponse(w, properties, http.StatusOK)
 }
 
 func (q *QBit) handleTorrentFiles(w http.ResponseWriter, r *http.Request) {
@@ -279,7 +279,7 @@ func (q *QBit) handleTorrentFiles(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Torrent not found", http.StatusNotFound)
 		return
 	}
-	request.JSONResponse(w, torr.Files, http.StatusOK)
+	utils.JSONResponse(w, torr.Files, http.StatusOK)
 }
 
 func (q *QBit) handleSetCategory(w http.ResponseWriter, r *http.Request) {
@@ -309,7 +309,7 @@ func (q *QBit) handleSetCategory(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Failed to update torrents", http.StatusInternalServerError)
 		return
 	}
-	request.JSONResponse(w, nil, http.StatusOK)
+	utils.JSONResponse(w, nil, http.StatusOK)
 }
 
 func (q *QBit) handleAddTorrentTags(w http.ResponseWriter, r *http.Request) {
@@ -328,7 +328,7 @@ func (q *QBit) handleAddTorrentTags(w http.ResponseWriter, r *http.Request) {
 	for _, t := range torrents {
 		q.setTorrentTags(t, tags)
 	}
-	request.JSONResponse(w, nil, http.StatusOK)
+	utils.JSONResponse(w, nil, http.StatusOK)
 }
 
 func (q *QBit) handleRemoveTorrentTags(w http.ResponseWriter, r *http.Request) {
@@ -348,11 +348,11 @@ func (q *QBit) handleRemoveTorrentTags(w http.ResponseWriter, r *http.Request) {
 		q.removeTorrentTags(torr, tags)
 
 	}
-	request.JSONResponse(w, nil, http.StatusOK)
+	utils.JSONResponse(w, nil, http.StatusOK)
 }
 
 func (q *QBit) handleGetTags(w http.ResponseWriter, r *http.Request) {
-	request.JSONResponse(w, q.Tags, http.StatusOK)
+	utils.JSONResponse(w, q.Tags, http.StatusOK)
 }
 
 func (q *QBit) handleCreateTags(w http.ResponseWriter, r *http.Request) {
@@ -366,5 +366,5 @@ func (q *QBit) handleCreateTags(w http.ResponseWriter, r *http.Request) {
 		tags[i] = strings.TrimSpace(tag)
 	}
 	q.addTags(tags)
-	request.JSONResponse(w, nil, http.StatusOK)
+	utils.JSONResponse(w, nil, http.StatusOK)
 }

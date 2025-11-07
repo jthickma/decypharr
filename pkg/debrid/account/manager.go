@@ -8,7 +8,7 @@ import (
 	"github.com/puzpuzpuz/xsync/v4"
 	"github.com/rs/zerolog"
 	"github.com/sirrobot01/decypharr/internal/config"
-	"github.com/sirrobot01/decypharr/internal/request"
+	"github.com/sirrobot01/decypharr/internal/httpclient"
 	"github.com/sirrobot01/decypharr/internal/utils"
 	"github.com/sirrobot01/decypharr/pkg/debrid/types"
 	"go.uber.org/ratelimit"
@@ -31,6 +31,7 @@ func NewManager(debridConf config.Debrid, downloadRL ratelimit.Limiter, logger z
 		accounts: xsync.NewMap[string, *Account](),
 		logger:   logger,
 	}
+	cfg := config.Get()
 
 	var firstAccount *Account
 	for idx, token := range debridConf.DownloadAPIKeys {
@@ -40,19 +41,23 @@ func NewManager(debridConf config.Debrid, downloadRL ratelimit.Limiter, logger z
 		headers := map[string]string{
 			"Authorization": fmt.Sprintf("Bearer %s", token),
 		}
+		httpConfig := &httpclient.Config{
+			RateLimit:  downloadRL,
+			Headers:    headers,
+			Proxy:      debridConf.Proxy,
+			MaxRetries: cfg.Retries,
+			RetryableStatus: map[int]struct{}{
+				429: {},
+				502: {},
+				447: {},
+			},
+		}
 		account := &Account{
-			Debrid: debridConf.Name,
-			Token:  token,
-			Index:  idx,
-			links:  xsync.NewMap[string, types.DownloadLink](),
-			httpClient: request.New(
-				request.WithRateLimiter(downloadRL),
-				request.WithLogger(logger),
-				request.WithHeaders(headers),
-				request.WithMaxRetries(3),
-				request.WithRetryableStatus(429, 447, 502),
-				request.WithProxy(debridConf.Proxy),
-			),
+			Debrid:     debridConf.Name,
+			Token:      token,
+			Index:      idx,
+			links:      xsync.NewMap[string, types.DownloadLink](),
+			httpClient: httpclient.New(httpConfig),
 		}
 		m.accounts.Store(token, account)
 		if firstAccount == nil {
@@ -212,28 +217,4 @@ func (m *Manager) Stats() []map[string]any {
 		stats = append(stats, accountDetail)
 	}
 	return stats
-}
-
-func (m *Manager) CheckAndResetBandwidth() {
-	found := false
-	m.accounts.Range(func(key string, acc *Account) bool {
-		if acc.Disabled.Load() && acc.DisableCount.Load() < MaxDisableCount {
-			if err := acc.CheckBandwidth(); err == nil {
-				acc.Disabled.Store(false)
-				found = true
-				m.logger.Info().Str("debrid", m.debrid).Str("token", utils.Mask(acc.Token)).Msg("Re-activated disabled account")
-			} else {
-				m.logger.Debug().Err(err).Str("debrid", m.debrid).Str("token", utils.Mask(acc.Token)).Msg("Account still disabled")
-			}
-		}
-		return true
-	})
-	if found {
-		// If we re-activated any account, reset current to first active
-		activeAccounts := m.Active()
-		if len(activeAccounts) > 0 {
-			m.current.Store(activeAccounts[0])
-		}
-
-	}
 }

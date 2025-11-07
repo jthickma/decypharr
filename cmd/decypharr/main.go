@@ -13,9 +13,12 @@ import (
 	"github.com/sirrobot01/decypharr/internal/config"
 	"github.com/sirrobot01/decypharr/internal/logger"
 	"github.com/sirrobot01/decypharr/pkg/manager"
-	"github.com/sirrobot01/decypharr/pkg/qbit"
+	"github.com/sirrobot01/decypharr/pkg/mount/dfs"
+	"github.com/sirrobot01/decypharr/pkg/mount/external"
+	"github.com/sirrobot01/decypharr/pkg/mount/rclone"
 	"github.com/sirrobot01/decypharr/pkg/repair"
 	"github.com/sirrobot01/decypharr/pkg/server"
+	"github.com/sirrobot01/decypharr/pkg/server/qbit"
 	"github.com/sirrobot01/decypharr/pkg/version"
 	"github.com/sirrobot01/decypharr/pkg/webdav"
 )
@@ -30,8 +33,6 @@ func Start(ctx context.Context) error {
 		SetUmask(int(umask))
 	}
 
-	mgr := manager.New()
-
 	restartCh := make(chan struct{}, 1)
 	restartFunc := func() {
 		select {
@@ -39,6 +40,8 @@ func Start(ctx context.Context) error {
 		default:
 		}
 	}
+
+	mgr := manager.New()
 
 	svcCtx, cancelSvc := context.WithCancel(ctx)
 	defer cancelSvc()
@@ -62,6 +65,8 @@ func Start(ctx context.Context) error {
 `, version.GetInfo(), cfg.LogLevel)
 
 		// Initialize services
+		mountMgr := createMountManager(mgr, cfg)
+		mgr.SetMountManager(mountMgr)
 		qb := qbit.New(mgr)
 		wd := webdav.NewHandler(mgr)
 		repairMgr := repair.New(mgr)
@@ -112,6 +117,18 @@ func Start(ctx context.Context) error {
 			// rebuild svcCtx off the original parent
 			svcCtx, cancelSvc = context.WithCancel(ctx)
 		}
+	}
+}
+
+func createMountManager(mgr *manager.Manager, cfg *config.Config) manager.MountManager {
+	switch cfg.Mount.Type {
+	case config.MountTypeRclone:
+		return rclone.NewManager(mgr)
+	case config.MountTypeDFS:
+		return dfs.NewManager(mgr)
+	default:
+		return external.NewManager(mgr)
+
 	}
 }
 

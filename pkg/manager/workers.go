@@ -4,13 +4,43 @@ import (
 	"context"
 
 	"github.com/go-co-op/gocron/v2"
+	"github.com/sirrobot01/decypharr/internal/config"
 	"github.com/sirrobot01/decypharr/internal/utils"
 	debrid "github.com/sirrobot01/decypharr/pkg/debrid/common"
 )
 
-func (m *Manager) StartWorkers(ctx context.Context) error {
-	go m.syncAccountsWorker(ctx)
-	return nil
+// runInitialCalls performs any initial calls of worker functions
+// for example, call the trackAvailableSlots and processQueuedTorrents functions once
+func (m *Manager) runInitialCalls(ctx context.Context) {
+	// Initial call to track available slots
+	go m.refreshDownloadLinks(ctx)
+	go m.trackAvailableSlots(ctx)
+	go m.processQueuedTorrents(ctx)
+	go m.syncAccounts(ctx)
+}
+
+func (m *Manager) syncAccounts(ctx context.Context) {
+	// Sync accounts for all debrids
+	m.clients.Range(func(debridName string, debridClient debrid.Client) bool {
+		if debridClient == nil {
+			return true
+		}
+		if err := debridClient.SyncAccounts(); err != nil {
+			m.logger.Error().Err(err).Str("debrid", debridName).Msg("Failed to sync accounts during initial call")
+		}
+		return true
+	})
+}
+
+func (m *Manager) refreshDownloadLinks(ctx context.Context) {
+	// Refresh download links for all debrids
+	m.clients.Range(func(debridName string, debridClient debrid.Client) bool {
+		if debridClient == nil {
+			return true
+		}
+		m.refreshDebridDownloadLinks(ctx, debridName, debridClient)
+		return true
+	})
 }
 
 func (m *Manager) addQueueProcessorJob(ctx context.Context) error {
@@ -26,6 +56,19 @@ func (m *Manager) addQueueProcessorJob(ctx context.Context) error {
 			m.logger.Error().Err(err).Msg("Failed to create slots tracking job")
 		} else {
 			m.logger.Trace().Msgf("Slots tracking job scheduled for every %s", "30s")
+		}
+	}
+
+	if jd, err := utils.ConvertToJobDef(m.config.RefreshInterval); err != nil {
+		m.logger.Error().Err(err).Msg("Failed to convert queue processing interval to job definition")
+	} else {
+		// Schedule the job
+		if _, err := m.scheduler.NewJob(jd, gocron.NewTask(func() {
+			m.processQueuedTorrents(ctx)
+		}), gocron.WithContext(ctx)); err != nil {
+			m.logger.Error().Err(err).Msg("Failed to create slots tracking job")
+		} else {
+			m.logger.Trace().Msgf("Queue processing job scheduled for every %s", m.config.RefreshInterval)
 		}
 	}
 
@@ -51,14 +94,15 @@ func (m *Manager) addQueueProcessorJob(ctx context.Context) error {
 }
 
 func (m *Manager) StartWorker(ctx context.Context) error {
-
 	// Stop any existing jobs before starting new ones
 	m.scheduler.RemoveByTags("decypharr")
+
+	// Call the initial calls
+	m.runInitialCalls(ctx)
 
 	if err := m.addQueueProcessorJob(ctx); err != nil {
 		return err
 	}
-
 	// Schedule per-debrid refresh jobs
 	m.clients.Range(func(debridName string, debridClient debrid.Client) bool {
 		if debridClient == nil {
@@ -73,7 +117,7 @@ func (m *Manager) StartWorker(ctx context.Context) error {
 		} else {
 			jobName := debridName + "-download-links"
 			if _, err := m.scheduler.NewJob(jd, gocron.NewTask(func() {
-				m.refreshDownloadLinks(ctx, debridName, debridClient)
+				m.refreshDebridDownloadLinks(ctx, debridName, debridClient)
 			}), gocron.WithContext(ctx), gocron.WithName(jobName)); err != nil {
 				m.logger.Error().Err(err).Str("debrid", debridName).Msg("Failed to create download link refresh job")
 			} else {
@@ -92,6 +136,22 @@ func (m *Manager) StartWorker(ctx context.Context) error {
 				m.logger.Error().Err(err).Str("debrid", debridName).Msg("Failed to create torrent refresh job")
 			} else {
 				m.logger.Debug().Str("debrid", debridName).Msgf("Torrent refresh job scheduled for every %s", debridConfig.TorrentsRefreshInterval)
+			}
+		}
+
+		// Schedule account sync job for this debrid
+		if jd, err := utils.ConvertToJobDef(config.DefaultAccountSyncInterval); err != nil {
+			m.logger.Error().Err(err).Str("debrid", debridName).Msg("Failed to convert account sync interval to job definition")
+		} else {
+			jobName := debridName + "-account-sync"
+			if _, err := m.scheduler.NewJob(jd, gocron.NewTask(func() {
+				if err := debridClient.SyncAccounts(); err != nil {
+					m.logger.Error().Err(err).Str("debrid", debridName).Msg("Failed to sync account")
+				}
+			}), gocron.WithContext(ctx), gocron.WithName(jobName)); err != nil {
+				m.logger.Error().Err(err).Str("debrid", debridName).Msg("Failed to create account sync job")
+			} else {
+				m.logger.Debug().Str("debrid", debridName).Msgf("Account sync job scheduled for every %s", config.DefaultAccountSyncInterval)
 			}
 		}
 

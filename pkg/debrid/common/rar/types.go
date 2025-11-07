@@ -1,8 +1,9 @@
 package rar
 
 import (
-	"net/http"
 	"time"
+
+	"github.com/imroc/req/v3"
 )
 
 // File represents a file entry in a RAR archive
@@ -17,11 +18,11 @@ type File struct {
 	NextOffset     int64
 }
 
-// Access point for a RAR archive served through HTTP
+// HttpFile represents a RAR file accessible over HTTP
 type HttpFile struct {
 	URL        string
 	Position   int64
-	Client     *http.Client
+	client     *req.Client
 	FileSize   int64
 	MaxRetries int
 	RetryDelay time.Duration

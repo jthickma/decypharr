@@ -23,7 +23,7 @@ type Manager struct {
 func NewManager(manager *manager.Manager) *Manager {
 	m := &Manager{
 		manager: manager,
-		logger:  logger.New("mount"),
+		logger:  logger.New("dfs"),
 	}
 	m.registerMounts()
 	return m
@@ -31,14 +31,13 @@ func NewManager(manager *manager.Manager) *Manager {
 
 func (m *Manager) registerMounts() {
 	mounts := make(map[string]*Mount)
-	_, mountPaths := m.manager.MountPaths()
-	for _, mountInfo := range mountPaths {
-		mnt, err := NewMount(mountInfo, m.manager)
+	for mountName := range m.manager.MountPaths() {
+		mnt, err := NewMount(mountName, m.manager)
 		if err != nil {
-			m.logger.Error().Err(err).Msgf("Failed to create FUSE mount for debrid: %s", mountInfo.Name())
+			m.logger.Error().Err(err).Msgf("Failed to create FUSE mount for debrid: %s", mountName)
 			continue
 		}
-		mounts[mountInfo.Name()] = mnt
+		mounts[mountName] = mnt
 	}
 	m.mu.Lock()
 	m.mounts = mounts
@@ -86,7 +85,7 @@ func (m *Manager) IsReady() bool {
 	return m.ready.Load()
 }
 
-func (m *Manager) GetStats() (map[string]interface{}, error) {
+func (m *Manager) Stats() map[string]interface{} {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -109,5 +108,9 @@ func (m *Manager) GetStats() (map[string]interface{}, error) {
 		stats["mounts"] = mountsInfo
 	}
 
-	return stats, nil
+	return stats
+}
+
+func (m *Manager) Type() string {
+	return "dfs"
 }

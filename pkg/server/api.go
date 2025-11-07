@@ -9,7 +9,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/sirrobot01/decypharr/internal/config"
-	"github.com/sirrobot01/decypharr/internal/request"
 	"github.com/sirrobot01/decypharr/internal/utils"
 	"github.com/sirrobot01/decypharr/pkg/arr"
 	"github.com/sirrobot01/decypharr/pkg/manager"
@@ -19,7 +18,7 @@ import (
 )
 
 func (s *Server) handleGetArrs(w http.ResponseWriter, r *http.Request) {
-	request.JSONResponse(w, s.manager.Arr().GetAll(), http.StatusOK)
+	utils.JSONResponse(w, s.manager.Arr().GetAll(), http.StatusOK)
 }
 
 func (s *Server) handleAddContent(w http.ResponseWriter, r *http.Request) {
@@ -38,7 +37,7 @@ func (s *Server) handleAddContent(w http.ResponseWriter, r *http.Request) {
 	callbackUrl := r.FormValue("callbackUrl")
 	downloadFolder := r.FormValue("downloadFolder")
 	if downloadFolder == "" {
-		downloadFolder = config.Get().Manager.DownloadFolder
+		downloadFolder = config.Get().DownloadFolder
 	}
 	skipMultiSeason := r.FormValue("skipMultiSeason") == "true"
 
@@ -47,7 +46,7 @@ func (s *Server) handleAddContent(w http.ResponseWriter, r *http.Request) {
 
 	// Check config setting - if always remove tracker URLs is enabled, force it to true
 	cfg := config.Get()
-	if cfg.Manager.AlwaysRmTrackerUrls {
+	if cfg.AlwaysRmTrackerUrls {
 		rmTrackerUrls = true
 	}
 
@@ -74,7 +73,7 @@ func (s *Server) handleAddContent(w http.ResponseWriter, r *http.Request) {
 			}
 
 			importReq := manager.NewImportRequest(debridName, downloadFolder, magnet, _arr, action, downloadUncached, callbackUrl, manager.ImportTypeAPI, skipMultiSeason)
-			if err := s.manager.AddTorrent(ctx, importReq); err != nil {
+			if err := s.manager.AddNewTorrent(ctx, importReq); err != nil {
 				s.logger.Error().Err(err).Str("url", url).Msg("Failed to add torrent")
 				errs = append(errs, fmt.Sprintf("URL %s: %v", url, err))
 				continue
@@ -99,7 +98,7 @@ func (s *Server) handleAddContent(w http.ResponseWriter, r *http.Request) {
 			}
 
 			importReq := manager.NewImportRequest(debridName, downloadFolder, magnet, _arr, action, downloadUncached, callbackUrl, manager.ImportTypeAPI, skipMultiSeason)
-			err = s.manager.AddTorrent(ctx, importReq)
+			err = s.manager.AddNewTorrent(ctx, importReq)
 			if err != nil {
 				s.logger.Error().Err(err).Str("file", fileHeader.Filename).Msg("Failed to add torrent")
 				errs = append(errs, fmt.Sprintf("File %s: %v", fileHeader.Filename, err))
@@ -109,7 +108,7 @@ func (s *Server) handleAddContent(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	request.JSONResponse(w, struct {
+	utils.JSONResponse(w, struct {
 		Results []*manager.ImportRequest `json:"results"`
 		Errors  []string                 `json:"errors,omitempty"`
 	}{
@@ -136,17 +135,17 @@ func (s *Server) handleRepairMedia(w http.ResponseWriter, r *http.Request) {
 		arrs = append(arrs, req.ArrName)
 	}
 
-	if err := s.repair.AddJob([]string{req.ArrName}, req.MediaIds, req.AutoProcess, false); err != nil {
+	if err := s.repair.AddJob(arrs, req.MediaIds, req.AutoProcess, false); err != nil {
 		http.Error(w, fmt.Sprintf("Failed to repair: %v", err), http.StatusInternalServerError)
 		return
 	}
 
-	request.JSONResponse(w, "Repair completed", http.StatusOK)
+	utils.JSONResponse(w, "Repair completed", http.StatusOK)
 }
 
 func (s *Server) handleGetVersion(w http.ResponseWriter, r *http.Request) {
 	v := version.GetInfo()
-	request.JSONResponse(w, v, http.StatusOK)
+	utils.JSONResponse(w, v, http.StatusOK)
 }
 
 func (s *Server) handleGetTorrents(w http.ResponseWriter, r *http.Request) {
@@ -234,7 +233,7 @@ func (s *Server) handleGetTorrents(w http.ResponseWriter, r *http.Request) {
 		categories = append(categories, c)
 	}
 
-	request.JSONResponse(w, map[string]interface{}{
+	utils.JSONResponse(w, map[string]interface{}{
 		"torrents":    paginatedTorrents,
 		"total":       total,
 		"page":        page,
@@ -299,9 +298,7 @@ func (s *Server) handleDeleteTorrent(w http.ResponseWriter, r *http.Request) {
 	var cleanup func(torrent *storage.Torrent) error
 	if removeFromDebrid {
 		cleanup = func(t *storage.Torrent) error {
-			go func() {
-				_ = s.manager.RemoveActivePlacements(t)
-			}()
+			go s.manager.RemoveTorrentPlacements(t)
 			return nil
 		}
 	}
@@ -326,9 +323,7 @@ func (s *Server) handleDeleteTorrents(w http.ResponseWriter, r *http.Request) {
 	var cleanup func(torrent *storage.Torrent) error
 	if removeFromDebrid {
 		cleanup = func(t *storage.Torrent) error {
-			go func() {
-				_ = s.manager.RemoveActivePlacements(t)
-			}()
+			go s.manager.RemoveTorrentPlacements(t)
 			return nil
 		}
 	}
@@ -355,7 +350,7 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 
 	response := &ConfigResponse{Config: cfg}
 
-	// Add API token and auth information
+	// AddOrUpdate API token and auth information
 	auth := cfg.GetAuth()
 	if auth != nil {
 		if auth.APIToken != "" {
@@ -364,7 +359,7 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		response.AuthUsername = auth.Username
 	}
 
-	request.JSONResponse(w, response, http.StatusOK)
+	utils.JSONResponse(w, response, http.StatusOK)
 }
 
 func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
@@ -378,31 +373,11 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 
 	// Get the current configuration
 	currentConfig := config.Get()
+	setupCompleted := currentConfig.SetupCompleted
 
-	// Update fields that can be changed
-	currentConfig.LogLevel = updatedConfig.LogLevel
-	currentConfig.MinFileSize = updatedConfig.MinFileSize
-	currentConfig.MaxFileSize = updatedConfig.MaxFileSize
-	currentConfig.RemoveStalledAfter = updatedConfig.RemoveStalledAfter
-	currentConfig.AllowedExt = updatedConfig.AllowedExt
-	currentConfig.DiscordWebhook = updatedConfig.DiscordWebhook
-	currentConfig.CallbackURL = updatedConfig.CallbackURL
-
-	// Should this be added?
-	currentConfig.URLBase = updatedConfig.URLBase
-	currentConfig.BindAddress = updatedConfig.BindAddress
-	currentConfig.Port = updatedConfig.Port
-
-	// Update Manager config (includes former QBitTorrent settings)
-	currentConfig.Manager = updatedConfig.Manager
-
-	// Update Repair config
-	currentConfig.Repair = updatedConfig.Repair
-	currentConfig.Rclone = updatedConfig.Rclone
-	currentConfig.Dfs = updatedConfig.Dfs
-
-	// Update Debrids
-	currentConfig.Debrids = updatedConfig.Debrids
+	auth := currentConfig.GetAuth()
+	currentConfig = &updatedConfig
+	currentConfig.Auth = auth
 
 	// Update Arrs through the service
 	arrStorage := s.manager.Arr()
@@ -420,6 +395,9 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	// Sync arrStorage with the new arrs
 	arrStorage.SyncFromConfig(currentConfig.Arrs)
 
+	// Preserve setup completed status
+	currentConfig.SetupCompleted = setupCompleted
+
 	if err := currentConfig.Save(); err != nil {
 		http.Error(w, "Error saving config: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -428,11 +406,11 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	go s.Restart()
 
 	// Return success
-	request.JSONResponse(w, map[string]string{"status": "success"}, http.StatusOK)
+	utils.JSONResponse(w, map[string]string{"status": "success"}, http.StatusOK)
 }
 
 func (s *Server) handleGetRepairJobs(w http.ResponseWriter, r *http.Request) {
-	request.JSONResponse(w, s.repair.GetJobs(), http.StatusOK)
+	utils.JSONResponse(w, s.repair.GetJobs(), http.StatusOK)
 }
 
 func (s *Server) handleProcessRepairJob(w http.ResponseWriter, r *http.Request) {
@@ -487,7 +465,7 @@ func (s *Server) handleRefreshAPIToken(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 
-	request.JSONResponse(w, map[string]interface{}{
+	utils.JSONResponse(w, map[string]interface{}{
 		"token":   token,
 		"message": "API token refreshed successfully",
 	}, http.StatusOK)
@@ -527,7 +505,7 @@ func (s *Server) handleUpdateAuth(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		request.JSONResponse(w, map[string]string{
+		utils.JSONResponse(w, map[string]string{
 			"message": "Authentication disabled successfully",
 		}, http.StatusOK)
 		return
@@ -574,7 +552,7 @@ func (s *Server) handleUpdateAuth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	request.JSONResponse(w, map[string]string{
+	utils.JSONResponse(w, map[string]string{
 		"message": "Authentication settings updated successfully",
 	}, http.StatusOK)
 }

@@ -144,8 +144,8 @@ func (s *Server) DownloadHandler(w http.ResponseWriter, r *http.Request) {
 		"Title":               "Download",
 		"Debrids":             debrids,
 		"HasMultiDebrid":      len(debrids) > 1,
-		"DownloadFolder":      cfg.Manager.DownloadFolder,
-		"AlwaysRmTrackerUrls": cfg.Manager.AlwaysRmTrackerUrls,
+		"DownloadFolder":      cfg.DownloadFolder,
+		"AlwaysRmTrackerUrls": cfg.AlwaysRmTrackerUrls,
 		"NeedSetup":           cfg.CheckSetup() != nil,
 		"SetupError":          cfg.CheckSetup(),
 	}

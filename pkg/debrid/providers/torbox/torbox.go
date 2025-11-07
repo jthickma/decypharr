@@ -1,12 +1,8 @@
 package torbox
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
-	"mime/multipart"
 	"net/http"
-	gourl "net/url"
 	"path"
 	"path/filepath"
 	"regexp"
@@ -16,10 +12,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/imroc/req/v3"
 	"github.com/rs/zerolog"
 	"github.com/sirrobot01/decypharr/internal/config"
+	"github.com/sirrobot01/decypharr/internal/httpclient"
 	"github.com/sirrobot01/decypharr/internal/logger"
-	"github.com/sirrobot01/decypharr/internal/request"
 	"github.com/sirrobot01/decypharr/internal/utils"
 	"github.com/sirrobot01/decypharr/pkg/debrid/account"
 	"github.com/sirrobot01/decypharr/pkg/debrid/types"
@@ -32,25 +29,32 @@ type Torbox struct {
 	APIKey                string
 	accountsManager       *account.Manager
 	autoExpiresLinksAfter time.Duration
-	client                *request.Client
+	client                *req.Client
 	logger                zerolog.Logger
 	Profile               *types.Profile
 	config                config.Debrid
 }
 
 func New(dc config.Debrid, ratelimits map[string]ratelimit.Limiter) (*Torbox, error) {
-
+	cfg := config.Get()
 	headers := map[string]string{
 		"Authorization": fmt.Sprintf("Bearer %s", dc.APIKey),
 		"User-Agent":    fmt.Sprintf("Decypharr/%s (%s; %s)", version.GetInfo(), runtime.GOOS, runtime.GOARCH),
 	}
 	_log := logger.New(dc.Name)
-	client := request.New(
-		request.WithHeaders(headers),
-		request.WithRateLimiter(ratelimits["main"]),
-		request.WithLogger(_log),
-		request.WithProxy(dc.Proxy),
-	)
+
+	clientConfig := &httpclient.Config{
+		BaseURL:    "https://api.torbox.app/v1",
+		Headers:    headers,
+		RateLimit:  ratelimits["main"],
+		Proxy:      dc.Proxy,
+		MaxRetries: cfg.Retries,
+		RetryableStatus: map[int]struct{}{
+			http.StatusTooManyRequests: {},
+			http.StatusBadGateway:      {},
+		},
+	}
+
 	autoExpiresLinksAfter, err := time.ParseDuration(dc.AutoExpireLinksAfter)
 	if autoExpiresLinksAfter == 0 || err != nil {
 		autoExpiresLinksAfter = 48 * time.Hour
@@ -62,7 +66,7 @@ func New(dc config.Debrid, ratelimits map[string]ratelimit.Limiter) (*Torbox, er
 		accountsManager:       account.NewManager(dc, ratelimits["download"], _log),
 		config:                dc,
 		autoExpiresLinksAfter: autoExpiresLinksAfter,
-		client:                client,
+		client:                httpclient.New(clientConfig),
 		logger:                _log,
 	}, nil
 }
@@ -100,16 +104,15 @@ func (tb *Torbox) IsAvailable(hashes []string) map[string]bool {
 		}
 
 		hashStr := strings.Join(validHashes, ",")
-		url := fmt.Sprintf("%s/api/torrents/checkcached?hash=%s", tb.Host, hashStr)
-		req, _ := http.NewRequest(http.MethodGet, url, nil)
-		resp, err := tb.client.MakeRequest(req)
-		if err != nil {
-			return result
-		}
+		url := fmt.Sprintf("/api/torrents/checkcached?hash=%s", hashStr)
 		var res AvailableResponse
-		err = json.Unmarshal(resp, &res)
-		if err != nil {
-			return result
+
+		resp, err := tb.client.R().
+			SetSuccessResult(&res).
+			Get(url)
+
+		if err != nil || !resp.IsSuccessState() {
+			continue
 		}
 		if res.Data == nil {
 			return result
@@ -125,27 +128,27 @@ func (tb *Torbox) IsAvailable(hashes []string) map[string]bool {
 }
 
 func (tb *Torbox) SubmitMagnet(torrent *types.Torrent) (*types.Torrent, error) {
-	url := fmt.Sprintf("%s/api/torrents/createtorrent", tb.Host)
-	payload := &bytes.Buffer{}
-	writer := multipart.NewWriter(payload)
-	_ = writer.WriteField("magnet", torrent.Magnet.Link)
-	if !torrent.DownloadUncached {
-		_ = writer.WriteField("add_only_if_cached", "true")
-	}
-	err := writer.Close()
-	if err != nil {
-		return nil, err
-	}
-	req, _ := http.NewRequest(http.MethodPost, url, payload)
-	req.Header.Set("Content-Type", writer.FormDataContentType())
-	resp, err := tb.client.MakeRequest(req)
-	if err != nil {
-		return nil, err
-	}
+	url := "/api/torrents/createtorrent"
 	var data AddMagnetResponse
-	err = json.Unmarshal(resp, &data)
+
+	formData := map[string]string{
+		"magnet": torrent.Magnet.Link,
+	}
+	if !torrent.DownloadUncached {
+		formData["add_only_if_cached"] = "true"
+	}
+
+	resp, err := tb.client.R().
+		SetFormData(formData).
+		SetSuccessResult(&data).
+		Post(url)
+
 	if err != nil {
 		return nil, err
+	}
+
+	if !resp.IsSuccessState() {
+		return nil, fmt.Errorf("torbox API error: Status: %d", resp.StatusCode)
 	}
 	if data.Data == nil {
 		return nil, fmt.Errorf("error adding torrent")
@@ -161,7 +164,7 @@ func (tb *Torbox) SubmitMagnet(torrent *types.Torrent) (*types.Torrent, error) {
 
 func (tb *Torbox) getTorboxStatus(status string, finished bool) types.TorrentStatus {
 	if finished {
-		return types.TorrentStatusCompleted
+		return types.TorrentStatusDownloaded
 	}
 	downloading := []string{"paused", "downloading",
 		"checkingResumeData", "metaDL", "pausedUP", "queuedUP", "checkingUP",
@@ -169,7 +172,7 @@ func (tb *Torbox) getTorboxStatus(status string, finished bool) types.TorrentSta
 		"queuedDL", "checkingDL", "forcedDL", "checkingResumeData", "moving"}
 
 	downloaded := []string{
-		"completed", "cached", "uploading",
+		"completed", "cached", "uploading", "downloaded",
 	}
 
 	status = regexp.MustCompile(`\s*\(.*?\)\s*`).ReplaceAllString(status, "")
@@ -178,23 +181,27 @@ func (tb *Torbox) getTorboxStatus(status string, finished bool) types.TorrentSta
 	case utils.Contains(downloading, status):
 		return types.TorrentStatusDownloading
 	case utils.Contains(downloaded, status):
-		return types.TorrentStatusCompleted
+		return types.TorrentStatusDownloaded
 	default:
 		return types.TorrentStatusError
 	}
 }
 
 func (tb *Torbox) GetTorrent(torrentId string) (*types.Torrent, error) {
-	url := fmt.Sprintf("%s/api/torrents/mylist/?id=%s", tb.Host, torrentId)
-	req, _ := http.NewRequest(http.MethodGet, url, nil)
-	resp, err := tb.client.MakeRequest(req)
+	url := "/api/torrents/mylist/"
+	var res InfoResponse
+
+	resp, err := tb.client.R().
+		SetQueryParam("id", torrentId).
+		SetSuccessResult(&res).
+		Get(url)
+
 	if err != nil {
 		return nil, err
 	}
-	var res InfoResponse
-	err = json.Unmarshal(resp, &res)
-	if err != nil {
-		return nil, err
+
+	if !resp.IsSuccessState() {
+		return nil, fmt.Errorf("torbox API error: Status: %d", resp.StatusCode)
 	}
 	data := res.Data
 	if data == nil {
@@ -204,7 +211,6 @@ func (tb *Torbox) GetTorrent(torrentId string) (*types.Torrent, error) {
 		Id:               strconv.Itoa(data.Id),
 		Name:             data.Name,
 		Bytes:            data.Size,
-		Folder:           data.Name,
 		Progress:         data.Progress * 100,
 		Status:           tb.getTorboxStatus(data.DownloadState, data.DownloadFinished),
 		Speed:            data.DownloadSpeed,
@@ -273,23 +279,26 @@ func (tb *Torbox) GetTorrent(torrentId string) (*types.Torrent, error) {
 }
 
 func (tb *Torbox) UpdateTorrent(t *types.Torrent) error {
-	url := fmt.Sprintf("%s/api/torrents/mylist/?id=%s", tb.Host, t.Id)
-	req, _ := http.NewRequest(http.MethodGet, url, nil)
-	resp, err := tb.client.MakeRequest(req)
+	url := "/api/torrents/mylist/"
+	var res InfoResponse
+
+	resp, err := tb.client.R().
+		SetQueryParam("id", t.Id).
+		SetSuccessResult(&res).
+		Get(url)
+
 	if err != nil {
 		return err
 	}
-	var res InfoResponse
-	err = json.Unmarshal(resp, &res)
-	if err != nil {
-		return err
+
+	if !resp.IsSuccessState() {
+		return fmt.Errorf("torbox API error: Status: %d", resp.StatusCode)
 	}
 	data := res.Data
 	name := data.Name
 
 	t.Name = name
 	t.Bytes = data.Size
-	t.Folder = name
 	t.Progress = data.Progress * 100
 	t.Status = tb.getTorboxStatus(data.DownloadState, data.DownloadFinished)
 	t.Speed = data.DownloadSpeed
@@ -357,10 +366,10 @@ func (tb *Torbox) CheckStatus(torrent *types.Torrent) (*types.Torrent, error) {
 		if err != nil || torrent == nil {
 			return torrent, err
 		}
-		if torrent.Status == types.TorrentStatusCompleted {
+		if torrent.Status == types.TorrentStatusDownloaded {
 			tb.logger.Info().Msgf("Torrent: %s downloaded", torrent.Name)
 			return torrent, nil
-		} else if utils.Contains(tb.GetDownloadingStatus(), string(torrent.Status)) {
+		} else if torrent.Status == types.TorrentStatusDownloading {
 			if !torrent.DownloadUncached {
 				return torrent, fmt.Errorf("torrent: %s not cached", torrent.Name)
 			}
@@ -375,13 +384,21 @@ func (tb *Torbox) CheckStatus(torrent *types.Torrent) (*types.Torrent, error) {
 }
 
 func (tb *Torbox) DeleteTorrent(torrentId string) error {
-	url := fmt.Sprintf("%s/api/torrents/controltorrent/%s", tb.Host, torrentId)
+	url := fmt.Sprintf("/api/torrents/controltorrent/%s", torrentId)
 	payload := map[string]string{"torrent_id": torrentId, "action": "Delete"}
-	jsonPayload, _ := json.Marshal(payload)
-	req, _ := http.NewRequest(http.MethodDelete, url, bytes.NewBuffer(jsonPayload))
-	if _, err := tb.client.MakeRequest(req); err != nil {
+
+	resp, err := tb.client.R().
+		SetBodyJsonMarshal(payload).
+		Delete(url)
+
+	if err != nil {
 		return err
 	}
+
+	if !resp.IsSuccessState() {
+		return fmt.Errorf("torbox API error: Status: %d", resp.StatusCode)
+	}
+
 	tb.logger.Info().Msgf("Torrent %s deleted from Torbox", torrentId)
 	return nil
 }
@@ -433,28 +450,28 @@ func (tb *Torbox) GetFileDownloadLinks(t *types.Torrent) error {
 		return firstErr
 	}
 
-	// Add links to cache
+	// AddOrUpdate links to cache
 	t.Files = files
 	return nil
 }
 
 func (tb *Torbox) GetDownloadLink(t *types.Torrent, file *types.File) (types.DownloadLink, error) {
-	url := fmt.Sprintf("%s/api/torrents/requestdl/", tb.Host)
-	query := gourl.Values{}
-	query.Add("torrent_id", t.Id)
-	query.Add("token", tb.APIKey)
-	query.Add("file_id", file.Id)
-	url += "?" + query.Encode()
+	url := "/api/torrents/requestdl/"
+	var data DownloadLinksResponse
 
-	req, _ := http.NewRequest(http.MethodGet, url, nil)
-	resp, err := tb.client.MakeRequest(req)
+	resp, err := tb.client.R().
+		SetQueryParam("torrent_id", t.Id).
+		SetQueryParam("token", tb.APIKey).
+		SetQueryParam("file_id", file.Id).
+		SetSuccessResult(&data).
+		Get(url)
+
 	if err != nil {
 		return types.DownloadLink{}, err
 	}
 
-	var data DownloadLinksResponse
-	if err = json.Unmarshal(resp, &data); err != nil {
-		return types.DownloadLink{}, err
+	if !resp.IsSuccessState() {
+		return types.DownloadLink{}, fmt.Errorf("torbox API error: Status: %d", resp.StatusCode)
 	}
 
 	if data.Data == nil {
@@ -481,10 +498,6 @@ func (tb *Torbox) GetDownloadLink(t *types.Torrent, file *types.File) (types.Dow
 	return dl, nil
 }
 
-func (tb *Torbox) GetDownloadingStatus() []string {
-	return []string{"downloading"}
-}
-
 func (tb *Torbox) GetTorrents() ([]*types.Torrent, error) {
 	offset := 0
 	allTorrents := make([]*types.Torrent, 0)
@@ -504,17 +517,20 @@ func (tb *Torbox) GetTorrents() ([]*types.Torrent, error) {
 }
 
 func (tb *Torbox) getTorrents(offset int) ([]*types.Torrent, error) {
-	url := fmt.Sprintf("%s/api/torrents/mylist?offset=%d", tb.Host, offset)
-	req, _ := http.NewRequest(http.MethodGet, url, nil)
-	resp, err := tb.client.MakeRequest(req)
+	url := "/api/torrents/mylist"
+	var res TorrentsListResponse
+
+	resp, err := tb.client.R().
+		SetQueryParam("offset", fmt.Sprintf("%d", offset)).
+		SetSuccessResult(&res).
+		Get(url)
+
 	if err != nil {
 		return nil, err
 	}
 
-	var res TorrentsListResponse
-	err = json.Unmarshal(resp, &res)
-	if err != nil {
-		return nil, err
+	if !resp.IsSuccessState() {
+		return nil, fmt.Errorf("torbox API error: Status: %d", resp.StatusCode)
 	}
 
 	if !res.Success || res.Data == nil {
@@ -529,7 +545,6 @@ func (tb *Torbox) getTorrents(offset int) ([]*types.Torrent, error) {
 			Id:               strconv.Itoa(data.Id),
 			Name:             data.Name,
 			Bytes:            data.Size,
-			Folder:           data.Name,
 			Progress:         data.Progress * 100,
 			Status:           tb.getTorboxStatus(data.DownloadState, data.DownloadFinished),
 			Speed:            data.DownloadSpeed,
@@ -636,21 +651,31 @@ func (tb *Torbox) GetProfile() (*types.Profile, error) {
 	if tb.Profile != nil {
 		return tb.Profile, nil
 	}
+	var data ProfileResponse
 
-	url := fmt.Sprintf("%s/api/user/me?settings=true", tb.Host)
-	req, _ := http.NewRequest(http.MethodGet, url, nil)
+	resp, err := tb.client.R().
+		SetQueryParam("settings", "true").
+		SetSuccessResult(&data).
+		Get("/api/user/me")
 
-	resp, err := tb.client.MakeRequest(req)
 	if err != nil {
 		return nil, err
 	}
 
-	var userData ProfileResponse
-	if json.Unmarshal(resp, &userData) != nil {
-		return nil, err
+	if !resp.IsSuccessState() {
+		return nil, fmt.Errorf("torbox API error: Status: %d", resp.StatusCode)
 	}
 
-	expiration := time.Unix(userData.PremiumExpiresAt, 0)
+	userData := data.Data
+	if userData == nil {
+		return nil, fmt.Errorf("error getting user profile")
+	}
+
+	expiration, err := time.Parse(time.RFC3339, userData.PremiumExpiresAt)
+	if err != nil {
+		expiration = time.Time{}
+	}
+
 	profile := &types.Profile{
 		Name:       tb.config.Name,
 		Id:         userData.Id,

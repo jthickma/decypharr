@@ -17,8 +17,7 @@ type QBit struct {
 }
 
 func New(manager *manager.Manager) *QBit {
-	_cfg := config.Get()
-	cfg := _cfg.Manager
+	cfg := config.Get()
 	return &QBit{
 		DownloadFolder:      cfg.DownloadFolder,
 		Categories:          cfg.Categories,

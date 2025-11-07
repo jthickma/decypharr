@@ -7,7 +7,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/sirrobot01/decypharr/internal/config"
-	"github.com/sirrobot01/decypharr/internal/request"
+	"github.com/sirrobot01/decypharr/internal/utils"
 	debrid "github.com/sirrobot01/decypharr/pkg/debrid/common"
 	debridTypes "github.com/sirrobot01/decypharr/pkg/debrid/types"
 )
@@ -20,7 +20,7 @@ func (s *Server) handleIngests(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	request.JSONResponse(w, ingests, 200)
+	utils.JSONResponse(w, ingests, 200)
 }
 
 func (s *Server) handleIngestsByDebrid(w http.ResponseWriter, r *http.Request) {
@@ -36,7 +36,7 @@ func (s *Server) handleIngestsByDebrid(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	request.JSONResponse(w, ingests, 200)
+	utils.JSONResponse(w, ingests, 200)
 }
 
 func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
@@ -109,10 +109,22 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		debridStats = append(debridStats, debridStat)
 		return true
 	})
-	stats["debrids"] = debridStats
 
-	// Add mount stats if available (supports rclone, dfs, or external)
+	// Order debrid stats by index in config
+	orderedDebridStats := make([]debridTypes.Stats, 0)
 	cfg := config.Get()
+	for _, debridCfg := range cfg.Debrids {
+		for _, ds := range debridStats {
+			if ds.Profile.Name == debridCfg.Name {
+				orderedDebridStats = append(orderedDebridStats, ds)
+				break
+			}
+		}
+	}
+
+	stats["debrids"] = orderedDebridStats
+
+	// AddOrUpdate mount stats if available (supports rclone, dfs, or external)
 	mountManager := s.manager.MountManager()
 
 	if mountManager != nil && mountManager.IsReady() {
@@ -122,7 +134,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 				"error":   fmt.Sprintf("failed to get mount stats: %v", err),
 				"type":    mountManager.Type(),
 				"ready":   true,
-				"enabled": cfg.Dfs.Enabled || cfg.Rclone.Enabled,
+				"enabled": cfg.Mount.Type != config.MountTypeExternalRclone,
 			}
 		} else {
 			stats["mount"] = mountStats
@@ -131,9 +143,9 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		// No mount enabled or not ready
 		stats["mount"] = map[string]interface{}{
 			"ready":   false,
-			"enabled": cfg.Dfs.Enabled || cfg.Rclone.Enabled,
+			"enabled": cfg.Mount.Type != config.MountTypeExternalRclone,
 		}
 	}
 
-	request.JSONResponse(w, stats, http.StatusOK)
+	utils.JSONResponse(w, stats, http.StatusOK)
 }

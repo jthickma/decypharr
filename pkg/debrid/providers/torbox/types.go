@@ -76,7 +76,7 @@ type DownloadLinksResponse APIResponse[string]
 
 type TorrentsListResponse APIResponse[[]torboxInfo]
 
-type ProfileResponse struct {
+type profileResponse struct {
 	Id                        int64  `json:"id"`
 	AuthId                    string `json:"auth_id"`
 	CreatedAt                 string `json:"created_at"`
@@ -85,7 +85,7 @@ type ProfileResponse struct {
 	TotalDownloaded           int64  `json:"total_downloaded"`
 	Customer                  string `json:"customer"`
 	IsSubscribed              bool   `json:"is_subscribed"`
-	PremiumExpiresAt          int64  `json:"premium_expires_at"`
+	PremiumExpiresAt          string `json:"premium_expires_at"`
 	CooldownUntil             string `json:"cooldown_until"`
 	Email                     string `json:"email"`
 	UserReferral              string `json:"user_referral"`
@@ -102,3 +102,5 @@ type ProfileResponse struct {
 	VendorId                  any    `json:"vendor_id"`
 	PurchasesReferred         int64  `json:"purchases_referred"`
 }
+
+type ProfileResponse APIResponse[profileResponse]

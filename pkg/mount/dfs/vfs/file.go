@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/puzpuzpuz/xsync/v4"
-	"github.com/sirrobot01/decypharr/pkg/debrid/types"
 	"github.com/sirrobot01/decypharr/pkg/manager"
 	"github.com/sirrobot01/decypharr/pkg/mount/dfs/vfs/ranges"
 )
@@ -43,12 +42,9 @@ type downloadJob struct {
 // Combines sparse file tracking, download logic, and prefetching in a single efficient struct
 type File struct {
 	// File metadata
-	path        string
-	torrentName string
-	fileName    string
-	fileLink    string
-	size        int64
-	chunkSize   int64
+	path      string
+	info      *manager.FileInfo
+	chunkSize int64
 
 	// On-disk file and range tracking
 	file       *os.File
@@ -76,13 +72,10 @@ type File struct {
 	closed    atomic.Bool   // Indicates if file is closed
 }
 
-// SparseFile is an alias for File to maintain backward compatibility during transition
-type SparseFile = File
-
 // newFile creates or opens a cached file with download capabilities
-func newFile(cacheDir string, torrentName string, torrentFile types.File, chunkSize, readAhead int64, stats *StatsTracker, manager *manager.Manager) (*File, error) {
-	sanitizedFileName := sanitizeForPath(torrentFile.Name)
-	torrentDir := filepath.Join(cacheDir, sanitizeForPath(torrentName))
+func newFile(cacheDir string, info *manager.FileInfo, chunkSize, readAhead int64, stats *StatsTracker, manager *manager.Manager) (*File, error) {
+	sanitizedFileName := sanitizeForPath(info.Name())
+	torrentDir := filepath.Join(cacheDir, sanitizeForPath(info.Parent()))
 	cachePath := filepath.Join(torrentDir, sanitizedFileName)
 
 	// Ensure directory exists
@@ -97,17 +90,14 @@ func newFile(cacheDir string, torrentName string, torrentFile types.File, chunkS
 	}
 
 	// Set file size (sparse allocation)
-	if err := file.Truncate(torrentFile.Size); err != nil {
+	if err := file.Truncate(info.Size()); err != nil {
 		_ = file.Close()
 		return nil, fmt.Errorf("truncate cache file: %w", err)
 	}
 
 	f := &File{
 		path:        cachePath,
-		torrentName: torrentName,
-		fileName:    torrentFile.Name,
-		fileLink:    torrentFile.Link,
-		size:        torrentFile.Size,
+		info:        info,
 		chunkSize:   chunkSize,
 		file:        file,
 		ranges:      nil, // Lazy-loaded via rangesOnce
@@ -124,45 +114,28 @@ func newFile(cacheDir string, torrentName string, torrentFile types.File, chunkS
 	return f, nil
 }
 
-// newSparseFile is a compatibility wrapper for existing code
-func newSparseFile(cacheDir, torrentName, fileName string, size, chunkSize int64, stats *StatsTracker, manager *manager.Manager) (*SparseFile, error) {
-	// Create a minimal File for backward compatibility
-	torrentFile := types.File{
-		Name: fileName,
-		Size: size,
-		Link: "", // Not needed for basic sparse file operations
-	}
-	return newFile(cacheDir, torrentName, torrentFile, chunkSize, 0, stats, manager)
-}
-
-// loadRanges lazy-loads ranges by scanning the actual file
-// Ranges are always rebuilt from actual data (fast enough with sampling)
-// This should only be called via ensureRangesLoaded() which uses sync.Once
-func (f *SparseFile) loadRanges() {
-	// Scan existing file to rebuild ranges
-	f.ranges = ranges.New()
-	_ = f.scanExistingData() // Ignore errors, ranges will be empty on failure
-}
-
 // ensureRangesLoaded ensures ranges are loaded exactly once (thread-safe)
-func (f *SparseFile) ensureRangesLoaded() {
-	f.rangesOnce.Do(f.loadRanges)
+func (f *File) ensureRangesLoaded() {
+	f.rangesOnce.Do(func() {
+		f.ranges = ranges.New()
+		_ = f.scanExistingData()
+	})
 }
 
 // scanExistingData scans the file to detect which chunks already have data
 // This is a fallback when metadata doesn't exist
-func (f *SparseFile) scanExistingData() error {
+func (f *File) scanExistingData() error {
 	// Read file in chunks and check if they contain non-zero data
 	// This is a heuristic - we check a few bytes per chunk for performance
 
-	numChunks := (f.size + f.chunkSize - 1) / f.chunkSize
+	numChunks := (f.info.Size() + f.chunkSize - 1) / f.chunkSize
 	sample := make([]byte, 4096) // Sample first 4KB of each chunk
 
 	for chunkIdx := int64(0); chunkIdx < numChunks; chunkIdx++ {
 		offset := chunkIdx * f.chunkSize
 		readSize := int64(len(sample))
-		if offset+readSize > f.size {
-			readSize = f.size - offset
+		if offset+readSize > f.info.Size() {
+			readSize = f.info.Size() - offset
 		}
 
 		n, err := f.file.ReadAt(sample[:readSize], offset)
@@ -182,8 +155,8 @@ func (f *SparseFile) scanExistingData() error {
 		if hasData {
 			// Mark entire chunk as present
 			chunkEnd := offset + f.chunkSize
-			if chunkEnd > f.size {
-				chunkEnd = f.size
+			if chunkEnd > f.info.Size() {
+				chunkEnd = f.info.Size()
 			}
 			f.ranges.Insert(ranges.Range{
 				Pos:  offset,
@@ -196,7 +169,7 @@ func (f *SparseFile) scanExistingData() error {
 }
 
 // saveMetadata persists the current state to disk
-func (f *SparseFile) getMetadata() (*Metadata, error) {
+func (f *File) getMetadata() (*Metadata, error) {
 	if f.manager == nil || f.ranges == nil {
 		return nil, nil
 	}
@@ -204,7 +177,7 @@ func (f *SparseFile) getMetadata() (*Metadata, error) {
 	meta := &Metadata{
 		ModTime:     f.modTime,
 		ATime:       f.lastAccess,
-		Size:        f.size,
+		Size:        f.info.Size(),
 		Ranges:      f.ranges.GetRanges(),
 		Fingerprint: "", // Could add ETag/hash here
 		Dirty:       f.dirty,
@@ -212,9 +185,9 @@ func (f *SparseFile) getMetadata() (*Metadata, error) {
 	return meta, nil
 }
 
-// ReadAt reads from cache if data is available, returns false if not cached
+// readAt reads from cache if data is available, returns false if not cached
 // Supports partial reads: if only part of the requested range is cached, returns what's available
-func (f *SparseFile) ReadAt(p []byte, offset int64) (n int, cached bool, err error) {
+func (f *File) readAt(p []byte, offset int64) (n int, cached bool, err error) {
 	// Ensure ranges are loaded exactly once (no lock upgrade needed!)
 	f.ensureRangesLoaded()
 
@@ -265,7 +238,7 @@ func (f *SparseFile) ReadAt(p []byte, offset int64) (n int, cached bool, err err
 }
 
 // WriteAt writes data and updates the range map
-func (f *SparseFile) WriteAt(p []byte, offset int64) (int, error) {
+func (f *File) WriteAt(p []byte, offset int64) (int, error) {
 	// Ensure ranges are loaded exactly once (no lock upgrade needed!)
 	f.ensureRangesLoaded()
 
@@ -292,7 +265,7 @@ func (f *SparseFile) WriteAt(p []byte, offset int64) (int, error) {
 }
 
 // Sync flushes data to disk
-func (f *SparseFile) Sync() error {
+func (f *File) Sync() error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -305,7 +278,7 @@ func (f *SparseFile) Sync() error {
 }
 
 // closeFD closes the file descriptor
-func (f *SparseFile) closeFD() error {
+func (f *File) closeFD() error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -318,7 +291,7 @@ func (f *SparseFile) closeFD() error {
 }
 
 // Close closes the file and stops all downloads
-func (f *SparseFile) Close() error {
+func (f *File) Close() error {
 	// Stop all downloads first
 	_ = f.CloseDownloads()
 
@@ -334,7 +307,7 @@ func (f *SparseFile) Close() error {
 }
 
 // removeFromDisk removes the sparse file from disk
-func (f *SparseFile) removeFromDisk() error {
+func (f *File) removeFromDisk() error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -353,7 +326,7 @@ func (f *SparseFile) removeFromDisk() error {
 }
 
 // GetCachedSize returns the total bytes downloaded
-func (f *SparseFile) GetCachedSize() int64 {
+func (f *File) GetCachedSize() int64 {
 	// Ensure ranges are loaded exactly once (no lock upgrade needed!)
 	f.ensureRangesLoaded()
 
@@ -367,7 +340,7 @@ func (f *SparseFile) GetCachedSize() int64 {
 }
 
 // GetCachedRanges returns all cached ranges (for debugging/stats)
-func (f *SparseFile) GetCachedRanges() []ranges.Range {
+func (f *File) GetCachedRanges() []ranges.Range {
 	// Ensure ranges are loaded exactly once (no lock upgrade needed!)
 	f.ensureRangesLoaded()
 
@@ -381,7 +354,7 @@ func (f *SparseFile) GetCachedRanges() []ranges.Range {
 }
 
 // FindMissing returns ranges that need to be downloaded
-func (f *SparseFile) FindMissing(offset, length int64) []ranges.Range {
+func (f *File) FindMissing(offset, length int64) []ranges.Range {
 	// Ensure ranges are loaded exactly once (no lock upgrade needed!)
 	f.ensureRangesLoaded()
 
@@ -400,8 +373,8 @@ func (f *SparseFile) FindMissing(offset, length int64) []ranges.Range {
 }
 
 // IsCached checks if a range is cached WITHOUT allocating buffers
-// This is much more efficient than ReadAt for cache checks
-func (f *SparseFile) IsCached(offset, length int64) bool {
+// This is much more efficient than readAt for cache checks
+func (f *File) IsCached(offset, length int64) bool {
 	// Ensure ranges are loaded exactly once (no lock upgrade needed!)
 	f.ensureRangesLoaded()
 
@@ -422,24 +395,25 @@ func (f *SparseFile) IsCached(offset, length int64) bool {
 // Download Methods (merged from Reader)
 // ============================================================================
 
-// ReadAtWithDownload reads data with progressive download for instant playback start
+// ReadAt reads data with progressive download for instant playback start
 // Downloads minimum threshold (512KB) then returns immediately while continuing in background
 // This enables playback to start in ~0.1-0.3 seconds instead of waiting for full 8MB chunk
-func (f *File) ReadAtWithDownload(ctx context.Context, p []byte, offset int64) (int, error) {
-	if offset >= f.size {
+func (f *File) ReadAt(ctx context.Context, p []byte, offset int64) (int, error) {
+	size := f.info.Size()
+	if offset >= size {
 		return 0, io.EOF
 	}
 
 	readSize := int64(len(p))
-	if offset+readSize > f.size {
-		readSize = f.size - offset
+	if offset+readSize > size {
+		readSize = size - offset
 		p = p[:readSize]
 	}
 
 	// Check if fully cached (zero-allocation check)
 	if f.IsCached(offset, readSize) {
 		// Cache hit - read and trigger prefetch
-		n, _, err := f.ReadAt(p, offset)
+		n, _, err := f.readAt(p, offset)
 		if err == nil {
 			go f.aggressiveSequentialPrefetch(ctx, offset+readSize)
 		}
@@ -476,7 +450,9 @@ func (f *File) ReadAtWithDownload(ctx context.Context, p []byte, offset int64) (
 	if numChunks > 1 {
 		for chunkIdx := startChunk + 1; chunkIdx <= endChunk; chunkIdx++ {
 			chunkIdx := chunkIdx // Capture loop variable
-			go f.downloadChunk(ctx, chunkIdx)
+			go func() {
+				_ = f.downloadChunk(ctx, chunkIdx)
+			}()
 		}
 	}
 
@@ -486,7 +462,7 @@ func (f *File) ReadAtWithDownload(ctx context.Context, p []byte, offset int64) (
 	// Read from file now - at least 512KB is ready from first chunk
 	// Note: May return partial data if background downloads haven't completed
 	// This is intentional - we return what's available immediately for fast playback start
-	n, _, err := f.ReadAt(p, offset)
+	n, _, err := f.readAt(p, offset)
 	if err != nil && err != io.EOF {
 		return n, err
 	}
@@ -517,7 +493,7 @@ func (f *File) aggressiveSequentialPrefetch(ctx context.Context, currentOffset i
 
 	startChunk := currentOffset / f.chunkSize
 	endChunk := startChunk + numChunks
-	totalChunks := (f.size + f.chunkSize - 1) / f.chunkSize
+	totalChunks := (f.info.Size() + f.chunkSize - 1) / f.chunkSize
 	if endChunk > totalChunks {
 		endChunk = totalChunks
 	}
@@ -543,8 +519,8 @@ func (f *File) downloadChunkAsync(ctx context.Context, chunkIdx int64) {
 	// Check if already cached (zero-allocation check)
 	chunkStart := chunkIdx * f.chunkSize
 	chunkEnd := chunkStart + f.chunkSize
-	if chunkEnd > f.size {
-		chunkEnd = f.size
+	if chunkEnd > f.info.Size() {
+		chunkEnd = f.info.Size()
 	}
 	if f.IsCached(chunkStart, chunkEnd-chunkStart) {
 		return // Already cached
@@ -570,8 +546,8 @@ func (f *File) downloadChunk(ctx context.Context, chunkIdx int64) error {
 func (f *File) downloadChunkWithThreshold(ctx context.Context, chunkIdx int64, minThreshold int64) error {
 	chunkStart := chunkIdx * f.chunkSize
 	chunkEnd := chunkStart + f.chunkSize
-	if chunkEnd > f.size {
-		chunkEnd = f.size
+	if chunkEnd > f.info.Size() {
+		chunkEnd = f.info.Size()
 	}
 	actualSize := chunkEnd - chunkStart
 
@@ -598,7 +574,9 @@ func (f *File) downloadChunkWithThreshold(ctx context.Context, chunkIdx int64, m
 			// We already have enough cached data
 			// Start background download for the rest if not already downloading
 			if _, exists := f.downloading.Load(chunkIdx); !exists {
-				go f.downloadChunk(ctx, chunkIdx)
+				go func() {
+					_ = f.downloadChunk(ctx, chunkIdx)
+				}()
 			}
 			return nil
 		}
@@ -679,12 +657,6 @@ func (f *File) downloadChunkWithThreshold(ctx context.Context, chunkIdx int64, m
 	return <-job.done
 }
 
-// doDownload performs the actual HTTP download with streaming writes
-// Uses pooled buffers and batched writes to minimize allocations and lock contention
-func (f *File) doDownload(ctx context.Context, offset, size int64) error {
-	return f.doDownloadWithJob(ctx, offset, size, nil)
-}
-
 // doDownloadProgressive performs progressive download with threshold signaling
 func (f *File) doDownloadProgressive(ctx context.Context, job *downloadJob) error {
 	return f.doDownloadWithJob(ctx, job.chunkStart, job.chunkSize, job)
@@ -693,11 +665,13 @@ func (f *File) doDownloadProgressive(ctx context.Context, job *downloadJob) erro
 // doDownloadWithJob performs the actual HTTP download with optional progressive signaling
 func (f *File) doDownloadWithJob(ctx context.Context, offset, size int64, job *downloadJob) error {
 	end := offset + size - 1
-	rc, err := f.manager.StreamReader(ctx, f.torrentName, f.fileName, offset, end)
+	rc, err := f.manager.StreamReader(ctx, f.info.Parent(), f.info.Name(), offset, end)
 	if err != nil {
 		return fmt.Errorf("get download link: %w", err)
 	}
-	defer rc.Close()
+	defer func(rc io.ReadCloser) {
+		_ = rc.Close()
+	}(rc)
 
 	// Get buffer from pool (128KB)
 	bufPtr := downloadBufferPool.Get().(*[]byte)
@@ -794,6 +768,6 @@ func (f *File) Stats() map[string]interface{} {
 		"chunk_size":       f.chunkSize,
 		"read_ahead":       f.readAhead,
 		"cached_size":      f.GetCachedSize(),
-		"total_size":       f.size,
+		"total_size":       f.info.Size(),
 	}
 }

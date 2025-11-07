@@ -4,11 +4,14 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 
 	"github.com/rs/zerolog"
 	"github.com/sirrobot01/decypharr/internal/config"
+	"github.com/sirrobot01/decypharr/internal/logger"
+	"github.com/sirrobot01/decypharr/internal/rclone"
 	"github.com/sirrobot01/decypharr/pkg/manager"
 )
 
@@ -19,34 +22,55 @@ type Mount struct {
 	WebDAVURL string
 	logger    zerolog.Logger
 	info      atomic.Value
+	client    *rclone.Client
+}
+
+func (m *Mount) Stats() map[string]interface{} {
+	info := m.getMountInfo()
+	mounted := false
+	if info != nil {
+		mounted = info.Mounted
+	}
+	return map[string]interface{}{
+		"enabled":   true,
+		"ready":     mounted,
+		"type":      m.Type(),
+		"provider":  m.Provider,
+		"mountPath": m.MountPath,
+		"webdavURL": m.WebDAVURL,
+		"mounted":   mounted,
+	}
 }
 
 // NewMount creates a new RC-based mount
-func NewMount(mountInfo manager.FileInfo, manager *manager.Manager, logger zerolog.Logger) (*Mount, error) {
+func NewMount(mountName string, mgr *manager.Manager, rcClient *rclone.Client) (*Mount, error) {
 	cfg := config.Get()
 	bindAddress := cfg.BindAddress
 	if bindAddress == "" {
 		bindAddress = "localhost"
 	}
-	_logger := logger.With().Str("mount", mountInfo.Name()).Logger()
+	_logger := logger.New("rclone").With().Str("mount", mountName).Logger()
 
 	baseUrl := fmt.Sprintf("http://%s:%s", bindAddress, cfg.Port)
-	webdavUrl, err := url.JoinPath(baseUrl, cfg.URLBase, "webdav", mountInfo.Name())
+	webdavUrl, err := url.JoinPath(baseUrl, cfg.URLBase, "webdav", mountName)
 	if err != nil {
-		return nil, fmt.Errorf("failed to construct WebDAV URL for %s: %w", mountInfo.Name(), err)
+		return nil, fmt.Errorf("failed to construct WebDAV URL for %s: %w", mountName, err)
 	}
 
-	mountPath := mountInfo.Path()
+	mountPath := filepath.Join(cfg.Mount.MountPath, mountName)
 	if !strings.HasSuffix(webdavUrl, "/") {
 		webdavUrl += "/"
 	}
 
-	return &Mount{
-		Provider:  mountInfo.Name(),
+	m := &Mount{
+		Provider:  mountName,
 		MountPath: mountPath,
 		WebDAVURL: webdavUrl,
 		logger:    _logger,
-	}, nil
+		client:    rcClient,
+	}
+	mgr.SetEventHandlers(manager.NewEventHandlers(m))
+	return m, nil
 }
 
 func (m *Mount) getMountInfo() *MountInfo {
@@ -71,8 +95,8 @@ func (m *Mount) Start(ctx context.Context) error {
 	}
 
 	// Try to ping rcd
-	if !pingServer() {
-		return fmt.Errorf("rclone RCD can't start")
+	if err := m.client.Ping(); err != nil {
+		return fmt.Errorf("rclone RC server is not reachable: %w", err)
 	}
 
 	m.logger.Info().Msg("Creating mount via RC")
@@ -120,37 +144,8 @@ func (m *Mount) Refresh(dirs []string) error {
 	if mountInfo == nil || !mountInfo.Mounted {
 		return fmt.Errorf("mount is not mounted")
 	}
-	args := map[string]interface{}{
-		"fs": fmt.Sprintf("%s:", m.Provider),
-	}
-	for i, dir := range dirs {
-		if dir != "" {
-			if i == 0 {
-				args["dir"] = dir
-			} else {
-				args[fmt.Sprintf("dir%d", i+1)] = dir
-			}
-		}
-	}
-	req := RCRequest{
-		Command: "vfs/forget",
-		Args:    args,
-	}
 
-	_, err := makeRequest(req, true)
-	if err != nil {
-		m.logger.Error().Err(err).
-			Msg("Failed to refresh directory")
-		return fmt.Errorf("failed to refresh directory %s for provider %s: %w", dirs, m.Provider, err)
-	}
-
-	req = RCRequest{
-		Command: "vfs/refresh",
-		Args:    args,
-	}
-
-	_, err = makeRequest(req, true)
-	if err != nil {
+	if err := m.client.Refresh(dirs, fmt.Sprintf("%s:", m.Provider)); err != nil {
 		m.logger.Error().Err(err).
 			Msg("Failed to refresh directory")
 		return fmt.Errorf("failed to refresh directory %s for provider %s: %w", dirs, m.Provider, err)

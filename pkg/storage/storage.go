@@ -38,7 +38,7 @@ func NewStorage(dbPath string) (*Storage, error) {
 		return nil, fmt.Errorf("failed to create db directory: %w", err)
 	}
 
-	// Add .db extension if not present
+	// AddOrUpdate .db extension if not present
 	if filepath.Ext(dbPath) == "" {
 		dbPath = dbPath + ".db"
 	}

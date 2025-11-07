@@ -2,13 +2,14 @@ package logger
 
 import (
 	"fmt"
-	"github.com/rs/zerolog"
-	"github.com/sirrobot01/decypharr/internal/config"
-	"gopkg.in/natefinch/lumberjack.v2"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"github.com/rs/zerolog"
+	"github.com/sirrobot01/decypharr/internal/config"
+	"gopkg.in/natefinch/lumberjack.v2"
 )
 
 var (
@@ -17,8 +18,7 @@ var (
 )
 
 func GetLogPath() string {
-	cfg := config.Get()
-	logsDir := filepath.Join(cfg.Path, "logs")
+	logsDir := filepath.Join(config.GetMainPath(), "logs")
 
 	if _, err := os.Stat(logsDir); os.IsNotExist(err) {
 		if err := os.MkdirAll(logsDir, 0755); err != nil {

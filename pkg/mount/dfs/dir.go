@@ -10,11 +10,9 @@ import (
 	"github.com/hanwen/go-fuse/v2/fuse"
 	"github.com/puzpuzpuz/xsync/v4"
 	"github.com/rs/zerolog"
-	"github.com/sirrobot01/decypharr/pkg/debrid/types"
 	"github.com/sirrobot01/decypharr/pkg/manager"
 	"github.com/sirrobot01/decypharr/pkg/mount/dfs/config"
 	"github.com/sirrobot01/decypharr/pkg/mount/dfs/vfs"
-	"github.com/sirrobot01/decypharr/pkg/storage"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -22,7 +20,6 @@ type DirLevel int
 
 const (
 	LevelRoot DirLevel = iota // This is __all__, version.txt, torrents, __bad__ and custom dirs
-	LevelPaginated
 	LevelTorrent
 	LevelFile
 )
@@ -91,9 +88,7 @@ func (d *Dir) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.
 	switch d.level {
 	case LevelRoot, LevelTorrent:
 		// For root and torrent levels, populate all children
-		// (these are small - just a few directories)
 		d.populateChildren(ctx)
-
 		// Try again after population
 		child, exists = d.children.Load(name)
 		if !exists {
@@ -134,7 +129,7 @@ func (d *Dir) returnExistingChild(ctx context.Context, name string, child *Child
 	// Set file size for regular files
 	if child.attr.Mode&fuse.S_IFREG != 0 {
 		if fileNode, ok := child.node.(*File); ok {
-			out.Attr.Size = uint64(fileNode.torrentFile.Size)
+			out.Attr.Size = uint64(fileNode.info.Size())
 		}
 	}
 
@@ -153,17 +148,12 @@ func (d *Dir) returnExistingChild(ctx context.Context, name string, child *Child
 // loadSingleFile loads only one specific file without populating all children
 func (d *Dir) loadSingleFile(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
 	// Get torrent from source
-	t, err := d.manager.GetTorrentByName(d.name)
-	if err != nil || t == nil {
-		return nil, syscall.ENOENT
+	info, err := d.manager.GetTorrentFile(d.name, name)
+	if err != nil {
+		d.logger.Error().Err(err).Str("torrent", d.name).Str("file", name).Msg("Failed to get file info from source")
+		return nil, syscall.EIO
 	}
-
-	// Search for the specific file
-	file, exists := t.Files[name]
-	if !exists || file.Deleted {
-		return nil, syscall.ENOENT
-	}
-	d.addFile(t, file)
+	d.addFile(info)
 
 	// Now retrieve and return it
 	child, ex := d.children.Load(name)
@@ -208,25 +198,6 @@ func (d *Dir) Unlink(ctx context.Context, name string) syscall.Errno {
 
 	// Handle different types of deletions based on directory level and file type
 	switch d.level {
-	case LevelRoot:
-		return syscall.EPERM
-	case LevelPaginated:
-		return syscall.EPERM
-	case LevelTorrent:
-		// For torrent level, check if it's a directory (torrent) that can be deleted
-		if child.attr.Mode&fuse.S_IFDIR != 0 {
-			// Get torrent by name to find its infohash
-			t, err := d.manager.GetTorrentByName(name)
-			if err == nil && t != nil {
-				err := d.manager.DeleteTorrent(t.InfoHash)
-				if err != nil {
-					d.logger.Error().Err(err).Str("name", name).Msg("Failed to remove torrent from source")
-					return syscall.EIO
-				}
-				d.logger.Info().Str("name", name).Msg("Removed torrent from source")
-			}
-		}
-
 	case LevelFile:
 		// Get torrent name from node
 		node := child.node
@@ -234,15 +205,53 @@ func (d *Dir) Unlink(ctx context.Context, name string) syscall.Errno {
 		if !ok {
 			return syscall.EINVAL
 		}
-
 		// Remove file from source
-		if err := d.manager.RemoveTorrentFile(fileNode.torrentName, fileNode.torrentFile.Name); err != nil {
-			d.logger.Error().Err(err).Str("file", fileNode.torrentFile.Name).Str("torrent", d.name).Msg("Failed to remove file from source")
+		if err := d.manager.RemoveEntry(fileNode.info); err != nil {
+			d.logger.Error().Err(err).Str("file", fileNode.info.Name()).Msg("Failed to remove file from source")
 			return syscall.EIO
 		}
 
 		// Close the file from range_manager
-		_ = d.vfs.CloseFile(filepath.Join(fileNode.torrentName, fileNode.torrentFile.Name))
+		_ = d.vfs.CloseFile(filepath.Join(fileNode.info.Parent(), fileNode.info.Name()))
+	default:
+		return syscall.EPERM
+	}
+
+	// Remove from our children map
+	d.children.Delete(name)
+
+	return 0
+}
+
+// RmDir removes a directory from this directory
+func (d *Dir) RmDir(ctx context.Context, name string) syscall.Errno {
+	// Check if the child exists
+	child, exists := d.children.Load(name)
+	if !exists {
+		return syscall.ENOENT
+	}
+
+	// Handle different types of deletions based on directory level and file type
+	switch d.level {
+	case LevelTorrent:
+		// Get torrent name from node
+		node := child.node
+		torrentDir, ok := node.(*Dir)
+		if !ok {
+			return syscall.EINVAL
+		}
+		// Remove torrent from source
+		info, err := d.manager.GetTorrentEntry(torrentDir.name)
+		if err != nil {
+			d.logger.Error().Err(err).Str("torrent", torrentDir.name).Msg("Failed to get torrent info from source")
+			return syscall.EIO
+		}
+		if err := d.manager.RemoveEntry(info); err != nil {
+			d.logger.Error().Err(err).Str("torrent", torrentDir.name).Msg("Failed to remove torrent from source")
+			return syscall.EIO
+		}
+	default:
+		return syscall.EPERM
 	}
 
 	// Remove from our children map
@@ -267,12 +276,10 @@ func (d *Dir) populateChildren(ctx context.Context) {
 		switch d.level {
 		case LevelRoot:
 			d.populateRootChildren(ctx)
-		case LevelPaginated:
-			d.populatePaginatedChildren(ctx)
 		case LevelTorrent:
-			d.populateTorrentChildren(ctx)
+			d.populateTorrents(ctx)
 		case LevelFile:
-			d.populateFileChildren(ctx)
+			d.populateTorrent(ctx)
 		}
 
 		d.populated.Store(true)
@@ -282,19 +289,19 @@ func (d *Dir) populateChildren(ctx context.Context) {
 
 // PopulateRoot populates the root directory with initial entries
 func (d *Dir) populateRootChildren(ctx context.Context) {
-	// Add standard directories
-	_, entries := d.manager.GetSubDir(d.name)
+	// AddOrUpdate standard directories
+	entries := d.manager.GetEntries()
 	for _, entry := range entries {
 		if entry.IsDir() {
-			d.addDirectory(entry.Name(), uint64(entry.ModTime().Unix()))
+			d.addDirectory(&entry)
 		} else {
 			d.addContentFile(entry)
 		}
 	}
 }
 
-func (d *Dir) populateTorrentChildren(ctx context.Context) {
-	_, entries := d.manager.GetChildren(d.name)
+func (d *Dir) populateTorrents(ctx context.Context) {
+	_, entries := d.manager.GetEntryChildren(d.name)
 	if entries == nil {
 		return
 	}
@@ -316,41 +323,16 @@ func (d *Dir) populateTorrentChildren(ctx context.Context) {
 	}
 }
 
-func (d *Dir) populatePaginatedChildren(ctx context.Context) {
-	_, entries := d.manager.GetChildrenInSubGroup(d.name)
-	if entries == nil {
-		return
-	}
-	for _, entry := range entries {
-		if entry.IsDir() {
-			// Just store metadata
-			name := entry.Name()
-			fullPath := d.name + "/" + name
-
-			childEntry := &ChildEntry{
-				node: nil, // Create lazily on first access
-				attr: fs.StableAttr{
-					Mode: fuse.S_IFDIR | 0755,
-					Ino:  hashPath(fullPath),
-				},
-			}
-			d.children.Store(name, childEntry)
-		}
-	}
-}
-
-func (d *Dir) populateFileChildren(ctx context.Context) {
+func (d *Dir) populateTorrent(ctx context.Context) {
 	// Get files for this torrent from source
-	t, err := d.manager.GetTorrentByName(d.name)
-	if err != nil || t == nil {
+	current, children := d.manager.GetTorrentChildren(d.name)
+	if current == nil || children == nil {
 		return
 	}
 
 	// Iterate over files map
-	for _, file := range t.Files {
-		if !file.Deleted {
-			d.addFile(t, file)
-		}
+	for _, child := range children {
+		d.addFile(&child)
 	}
 }
 
@@ -358,10 +340,7 @@ func (d *Dir) addContentFile(entry manager.FileInfo) {
 	fileNode := newFile(
 		d.vfs,
 		d.config,
-		"",
-		types.File{Name: entry.Name(), Size: entry.Size()},
-		entry.ModTime(),
-		entry.Content(),
+		&entry,
 		d.logger,
 	)
 
@@ -376,13 +355,13 @@ func (d *Dir) addContentFile(entry manager.FileInfo) {
 	d.children.Store(entry.Name(), childEntry)
 }
 
-func (d *Dir) addDirectory(name string, modTime uint64) {
-	dirNode := NewDir(d.vfs, d.manager, name, d.level+1, modTime, d.config, d.logger)
+func (d *Dir) addDirectory(entry *manager.FileInfo) {
+	dirNode := NewDir(d.vfs, d.manager, entry.Name(), d.level+1, uint64(entry.ModTime().Unix()), d.config, d.logger)
 
 	// Hash full path to ensure unique inodes
-	fullPath := d.name + "/" + name
+	fullPath := d.name + "/" + entry.Name()
 
-	entry := &ChildEntry{
+	e := &ChildEntry{
 		node: dirNode,
 		attr: fs.StableAttr{
 			Mode: fuse.S_IFDIR | 0755,
@@ -390,27 +369,17 @@ func (d *Dir) addDirectory(name string, modTime uint64) {
 		},
 	}
 
-	d.children.Store(name, entry)
+	d.children.Store(entry.Name(), e)
 }
 
-func (d *Dir) addFile(t *storage.Torrent, file *storage.File) {
-	// Create file node based on your file info
-	torrentName := internString(d.name)
+func (d *Dir) addFile(entry *manager.FileInfo) {
 
-	// Convert torrent.File to types.File for compatibility with existing file node
-	typesFile := types.File{
-		Name:      file.Name,
-		Size:      file.Size,
-		IsRar:     file.IsRar,
-		ByteRange: file.ByteRange,
-	}
-
-	fileNode := newFile(d.vfs, d.config, torrentName, typesFile, t.AddedOn, nil, d.logger)
+	fileNode := newFile(d.vfs, d.config, entry, d.logger)
 
 	// Hash full path to ensure unique inodes
-	fullPath := d.name + "/" + file.Name
+	fullPath := d.name + "/" + entry.Name()
 
-	entry := &ChildEntry{
+	e := &ChildEntry{
 		node: fileNode,
 		attr: fs.StableAttr{
 			Mode: fuse.S_IFREG | 0644,
@@ -418,5 +387,5 @@ func (d *Dir) addFile(t *storage.Torrent, file *storage.File) {
 		},
 	}
 
-	d.children.Store(file.Name, entry)
+	d.children.Store(entry.Name(), e)
 }

@@ -8,8 +8,8 @@ import (
 	bolt "go.etcd.io/bbolt"
 )
 
-// Add adds or updates a torrent with automatic bucket management
-func (s *Storage) Add(torrent *Torrent) error {
+// AddOrUpdate adds or updates a torrent with automatic bucket management
+func (s *Storage) AddOrUpdate(torrent *Torrent) error {
 	torrent.UpdatedAt = time.Now()
 	torrent.State = torrent.GetState()
 
@@ -141,12 +141,6 @@ func (s *Storage) List(filter func(*Torrent) bool) ([]*Torrent, error) {
 	})
 
 	return torrents, err
-}
-
-// Update updates a torrent (alias for Add)
-func (s *Storage) Update(torrent *Torrent) error {
-	torrent.State = torrent.GetState()
-	return s.Add(torrent)
 }
 
 // Delete removes a torrent

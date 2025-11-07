@@ -1,33 +1,26 @@
 package arr
 
 import (
-	"bytes"
 	"cmp"
 	"context"
-	"crypto/tls"
-	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/imroc/req/v3"
 	"github.com/rs/zerolog"
 	"github.com/sirrobot01/decypharr/internal/config"
+	"github.com/sirrobot01/decypharr/internal/httpclient"
 	"github.com/sirrobot01/decypharr/internal/logger"
-	"github.com/sirrobot01/decypharr/internal/request"
+	"github.com/sirrobot01/decypharr/internal/utils"
 )
 
 // Type is a type of arr
 type Type string
 
-var sharedClient = &http.Client{
-	Transport: &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-	},
-	Timeout: 60 * time.Second,
-}
+var sharedClient = httpclient.DefaultClient()
 
 const (
 	Sonarr  Type = "sonarr"
@@ -64,51 +57,55 @@ func New(name, host, token string, cleanup, skipRepair bool, downloadUncached *b
 	}
 }
 
-func (a *Arr) Request(method, endpoint string, payload interface{}) (*http.Response, error) {
+func (a *Arr) Request(method, endpoint string, payload interface{}, res any) (*req.Response, error) {
 	if a.Token == "" || a.Host == "" {
 		return nil, fmt.Errorf("arr not configured")
 	}
-	url, err := request.JoinURL(a.Host, endpoint)
+	url, err := utils.JoinURL(a.Host, endpoint)
 	if err != nil {
 		return nil, err
 	}
-	var body io.Reader
-	if payload != nil {
-		b, err := json.Marshal(payload)
-		if err != nil {
-			return nil, err
-		}
-		body = bytes.NewReader(b)
+
+	switch method {
+	case http.MethodGet:
+		return sharedClient.R().
+			SetRetryCount(5).
+			SetBody(payload).
+			SetHeader("Content-Type", "application/json").
+			SetHeader("X-Api-Key", a.Token).
+			SetRetryBackoffInterval(100*time.Millisecond, 2*time.Second).
+			SetSuccessResult(res).
+			Get(url)
+	case http.MethodPost:
+		return sharedClient.R().
+			SetRetryCount(5).
+			SetBody(payload).
+			SetHeader("Content-Type", "application/json").
+			SetHeader("X-Api-Key", a.Token).
+			SetRetryBackoffInterval(100*time.Millisecond, 2*time.Second).
+			SetSuccessResult(res).
+			Post(url)
+	case http.MethodPut:
+		return sharedClient.R().
+			SetRetryCount(5).
+			SetBody(payload).
+			SetHeader("Content-Type", "application/json").
+			SetHeader("X-Api-Key", a.Token).
+			SetRetryBackoffInterval(100*time.Millisecond, 2*time.Second).
+			SetSuccessResult(res).
+			Put(url)
+	case http.MethodDelete:
+		return sharedClient.R().
+			SetRetryCount(5).
+			SetBody(payload).
+			SetHeader("Content-Type", "application/json").
+			SetHeader("X-Api-Key", a.Token).
+			SetRetryBackoffInterval(100*time.Millisecond, 2*time.Second).
+			SetSuccessResult(res).
+			Delete(url)
+	default:
+		return nil, fmt.Errorf("unsupported method: %s", method)
 	}
-	req, err := http.NewRequest(method, url, body)
-
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Api-Key", a.Token)
-
-	var resp *http.Response
-
-	for attempts := 0; attempts < 5; attempts++ {
-		resp, err = sharedClient.Do(req)
-		if err != nil {
-			return nil, err
-		}
-
-		// If we got a 401, wait briefly and retry
-		if resp.StatusCode == http.StatusUnauthorized {
-			resp.Body.Close() // Don't leak response bodies
-			if attempts < 4 { // Don't sleep on the last attempt
-				time.Sleep(time.Duration(attempts+1) * 100 * time.Millisecond)
-				continue
-			}
-		}
-
-		return resp, nil
-	}
-
-	return resp, err
 }
 
 func (a *Arr) Validate() error {
@@ -116,14 +113,13 @@ func (a *Arr) Validate() error {
 		return fmt.Errorf("arr not configured")
 	}
 
-	if request.ValidateURL(a.Host) != nil {
+	if utils.ValidateURL(a.Host) != nil {
 		return fmt.Errorf("invalid arr host URL")
 	}
-	resp, err := a.Request("GET", "/api/v3/health", nil)
+	resp, err := a.Request("GET", "/api/v3/health", nil, nil)
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
 	// If response is not 200 or 404(this is the case for Lidarr, etc), return an error
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNotFound {
 		return fmt.Errorf("failed to validate arr %s: %s", a.Name, resp.Status)
@@ -151,7 +147,7 @@ func NewStorage() *Storage {
 		}
 		name := a.Name
 		as := New(name, a.Host, a.Token, a.Cleanup, a.SkipRepair, a.DownloadUncached, a.SelectedDebrid, a.Source)
-		if request.ValidateURL(as.Host) != nil {
+		if utils.ValidateURL(as.Host) != nil {
 			continue
 		}
 		arrs[a.Name] = as
@@ -170,13 +166,16 @@ func (s *Storage) AddOrUpdate(arr *Arr) {
 	}
 
 	// Check the host URL
-	if request.ValidateURL(arr.Host) != nil {
+	if utils.ValidateURL(arr.Host) != nil {
 		return
 	}
 	s.Arrs[arr.Name] = arr
 }
 
 func (s *Storage) GetOrCreate(name string) *Arr {
+	if name == "" {
+		name = "uncategorized"
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	arr, exists := s.Arrs[name]
@@ -219,7 +218,7 @@ func (s *Storage) SyncToConfig() []config.Arr {
 		if ok {
 			// Update existing arr config
 			// Check if the host URL is valid
-			if request.ValidateURL(arr.Host) == nil {
+			if utils.ValidateURL(arr.Host) == nil {
 				exists.Host = arr.Host
 			}
 			exists.Token = cmp.Or(exists.Token, arr.Token)
@@ -229,7 +228,7 @@ func (s *Storage) SyncToConfig() []config.Arr {
 			exists.SelectedDebrid = arr.SelectedDebrid
 			arrConfigs[name] = exists
 		} else {
-			// Add new arr config
+			// AddOrUpdate new arr config
 			arrConfigs[name] = config.Arr{
 				Name:             arr.Name,
 				Host:             arr.Host,
@@ -258,12 +257,12 @@ func (s *Storage) SyncFromConfig(arrs []config.Arr) {
 		arrConfigs[a.Name] = New(a.Name, a.Host, a.Token, a.Cleanup, a.SkipRepair, a.DownloadUncached, a.SelectedDebrid, a.Source)
 	}
 
-	// Add or update arrs from config
+	// AddOrUpdate or update arrs from config
 	for name, arr := range s.Arrs {
 		if ac, ok := arrConfigs[name]; ok {
 			// Update existing arr
 			// is the host URL valid?
-			if request.ValidateURL(ac.Host) == nil {
+			if utils.ValidateURL(ac.Host) == nil {
 				ac.Host = arr.Host
 			}
 			ac.Token = cmp.Or(ac.Token, arr.Token)
@@ -321,7 +320,7 @@ func (a *Arr) Refresh() {
 		Name: "RefreshMonitoredDownloads",
 	}
 
-	_, _ = a.Request(http.MethodPost, "api/v3/command", payload)
+	_, _ = a.Request(http.MethodPost, "api/v3/command", payload, nil)
 }
 
 func inferType(host, name string) Type {

@@ -1,29 +1,27 @@
 package realdebrid
 
 import (
-	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
-	gourl "net/url"
+	"net/url"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/imroc/req/v3"
+	"github.com/sirrobot01/decypharr/internal/httpclient"
 	"github.com/sirrobot01/decypharr/pkg/debrid/account"
+	"github.com/sirrobot01/decypharr/pkg/debrid/common/rar"
 	"github.com/sirrobot01/decypharr/pkg/debrid/types"
 	"go.uber.org/ratelimit"
 
 	"github.com/rs/zerolog"
 	"github.com/sirrobot01/decypharr/internal/config"
 	"github.com/sirrobot01/decypharr/internal/logger"
-	"github.com/sirrobot01/decypharr/internal/request"
 	"github.com/sirrobot01/decypharr/internal/utils"
-	"github.com/sirrobot01/decypharr/pkg/rar"
 )
 
 type RealDebrid struct {
@@ -31,8 +29,8 @@ type RealDebrid struct {
 
 	APIKey                string
 	accountsManager       *account.Manager
-	client                *request.Client
-	repairClient          *request.Client
+	client                *req.Client
+	repairClient          *req.Client
 	autoExpiresLinksAfter time.Duration
 	logger                zerolog.Logger
 
@@ -42,7 +40,7 @@ type RealDebrid struct {
 }
 
 func New(dc config.Debrid, ratelimits map[string]ratelimit.Limiter) (*RealDebrid, error) {
-
+	cfg := config.Get()
 	headers := map[string]string{
 		"Authorization": fmt.Sprintf("Bearer %s", dc.APIKey),
 	}
@@ -52,35 +50,46 @@ func New(dc config.Debrid, ratelimits map[string]ratelimit.Limiter) (*RealDebrid
 	if autoExpiresLinksAfter == 0 || err != nil {
 		autoExpiresLinksAfter = 48 * time.Hour
 	}
+	mainClientConfig := &httpclient.Config{
+		BaseURL:    "https://api.real-debrid.com/rest/1.0",
+		Headers:    headers,
+		RateLimit:  ratelimits["main"],
+		Proxy:      dc.Proxy,
+		MaxRetries: cfg.Retries,
+		RetryableStatus: map[int]struct{}{
+			http.StatusTooManyRequests: {},
+			http.StatusBadGateway:      {},
+		},
+	}
+	repairClientConfig := &httpclient.Config{
+		BaseURL:    "https://api.real-debrid.com/rest/1.0",
+		Headers:    headers,
+		RateLimit:  ratelimits["repair"],
+		Proxy:      dc.Proxy,
+		MaxRetries: cfg.Retries,
+		RetryableStatus: map[int]struct{}{
+			http.StatusTooManyRequests: {},
+			http.StatusBadGateway:      {},
+		},
+	}
 
 	r := &RealDebrid{
 		Host:                  "https://api.real-debrid.com/rest/1.0",
 		APIKey:                dc.APIKey,
 		accountsManager:       account.NewManager(dc, ratelimits["download"], _log),
 		autoExpiresLinksAfter: autoExpiresLinksAfter,
-		client: request.New(
-			request.WithHeaders(headers),
-			request.WithRateLimiter(ratelimits["main"]),
-			request.WithLogger(_log),
-			request.WithMaxRetries(10),
-			request.WithRetryableStatus(429, 502),
-			request.WithProxy(dc.Proxy),
-		),
-		repairClient: request.New(
-			request.WithRateLimiter(ratelimits["repair"]),
-			request.WithHeaders(headers),
-			request.WithLogger(_log),
-			request.WithMaxRetries(4),
-			request.WithRetryableStatus(429, 502),
-			request.WithProxy(dc.Proxy),
-		),
-		logger:       logger.New(dc.Name),
-		rarSemaphore: make(chan struct{}, 2),
-		config:       dc,
+		client:                httpclient.New(mainClientConfig),
+		repairClient:          httpclient.New(repairClientConfig),
+		logger:                logger.New(dc.Name),
+		rarSemaphore:          make(chan struct{}, 2),
+		config:                dc,
 	}
 
 	go func() {
-		_, _ = r.GetProfile()
+		_, err = r.GetProfile()
+		if err != nil {
+			r.logger.Error().Err(err).Msg("Failed to get RealDebrid profile")
+		}
 	}()
 	return r, nil
 }
@@ -277,23 +286,22 @@ func (r *RealDebrid) IsAvailable(hashes []string) map[string]bool {
 		}
 
 		hashStr := strings.Join(validHashes, "/")
-		url := fmt.Sprintf("%s/torrents/instantAvailability/%s", r.Host, hashStr)
-		req, _ := http.NewRequest(http.MethodGet, url, nil)
-		resp, err := r.client.MakeRequest(req)
-		if err != nil {
-			r.logger.Error().Err(err).Msgf("Error checking availability")
-			return result
-		}
 		var data AvailabilityResponse
-		err = json.Unmarshal(resp, &data)
+		resp, err := r.client.R().
+			SetSuccessResult(&data).
+			Get(fmt.Sprintf("/torrents/instantAvailability/%s", hashStr))
+
 		if err != nil {
-			r.logger.Error().Err(err).Msgf("Error marshalling availability")
-			return result
+			r.logger.Error().Err(err).Msg("Error checking availability")
+			continue
 		}
-		for _, h := range hashes[i:end] {
-			hosters, exists := data[strings.ToLower(h)]
-			if exists && len(hosters.Rd) > 0 {
-				result[h] = true
+
+		if resp.IsSuccessState() {
+			for _, h := range hashes[i:end] {
+				hosters, exists := data[strings.ToLower(h)]
+				if exists && len(hosters.Rd) > 0 {
+					result[h] = true
+				}
 			}
 		}
 	}
@@ -308,156 +316,202 @@ func (r *RealDebrid) SubmitMagnet(t *types.Torrent) (*types.Torrent, error) {
 }
 
 func (r *RealDebrid) addTorrent(t *types.Torrent) (*types.Torrent, error) {
-	url := fmt.Sprintf("%s/torrents/addTorrent", r.Host)
 	var data AddMagnetSchema
-	req, err := http.NewRequest(http.MethodPut, url, bytes.NewReader(t.Magnet.File))
+
+	resp, err := r.client.R().
+		SetHeader("Content-Type", "application/x-bittorrent").
+		SetBody(t.Magnet.File).
+		SetSuccessResult(&data).
+		Put("/torrents/addTorrent")
 
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Add("Content-Type", "application/x-bittorrent")
-	resp, err := r.client.Do(req)
-	if err != nil {
-		return nil, err
-	}
+
+	// Handle status codes
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		// Handle multiple_downloads
 		if resp.StatusCode == 509 {
 			return nil, utils.TooManyActiveDownloadsError
 		}
+		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 	}
-	defer func(Body io.ReadCloser) {
-		_ = Body.Close()
-	}(resp.Body)
-	if err = json.NewDecoder(resp.Body).Decode(&data); err != nil {
-		return nil, err
-	}
+
 	t.Id = data.Id
 	t.Debrid = r.config.Name
 	t.Added = time.Now().Format(time.RFC3339)
+
 	return t, nil
 }
 
 func (r *RealDebrid) addMagnet(t *types.Torrent) (*types.Torrent, error) {
-	url := fmt.Sprintf("%s/torrents/addMagnet", r.Host)
-	payload := gourl.Values{
-		"magnet": {t.Magnet.Link},
-	}
 	var data AddMagnetSchema
-	req, _ := http.NewRequest(http.MethodPost, url, strings.NewReader(payload.Encode()))
-	resp, err := r.client.Do(req)
+	var errorResp map[string]interface{}
+
+	resp, err := r.client.R().
+		SetFormData(map[string]string{
+			"magnet": t.Magnet.Link,
+		}).
+		SetSuccessResult(&data).
+		SetErrorResult(&errorResp).
+		Post("/torrents/addMagnet")
+
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		// Handle multiple_downloads
 
-		if resp.StatusCode == 509 {
-			return nil, utils.TooManyActiveDownloadsError
+	// Handle status codes
+	switch resp.StatusCode {
+	case http.StatusOK, http.StatusCreated:
+		t.Id = data.Id
+		t.Debrid = r.config.Name
+		t.Added = time.Now().Format(time.RFC3339)
+
+		return t, nil
+
+	case 509:
+		return nil, utils.TooManyActiveDownloadsError
+
+	default:
+		// Get error body (limited to 1024 bytes like original)
+		errorBody := resp.String()
+		if len(errorBody) > 1024 {
+			errorBody = errorBody[:1024]
 		}
-
-		bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return nil, fmt.Errorf("realdebrid API error: Status: %d || Body: %s", resp.StatusCode, string(bodyBytes))
+		return nil, fmt.Errorf("realdebrid API error: Status: %d || Body: %s",
+			resp.StatusCode, errorBody)
 	}
-	if err = json.NewDecoder(resp.Body).Decode(&data); err != nil {
-		return nil, err
-	}
-	t.Id = data.Id
-	t.Debrid = r.config.Name
-	t.Added = time.Now().Format(time.RFC3339)
-	return t, nil
 }
 
 func (r *RealDebrid) GetTorrent(torrentId string) (*types.Torrent, error) {
-	url := fmt.Sprintf("%s/torrents/info/%s", r.Host, torrentId)
-	req, _ := http.NewRequest(http.MethodGet, url, nil)
-	resp, err := r.client.Do(req)
+	var data torrentInfo
+	var errorResp map[string]interface{}
+
+	resp, err := r.client.R().
+		SetPathParam("torrentId", torrentId). // Alternative: use path params
+		SetSuccessResult(&data).
+		SetErrorResult(&errorResp).
+		Get(fmt.Sprintf("/torrents/info/%s", torrentId))
+
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		if resp.StatusCode == http.StatusNotFound {
-			return nil, utils.TorrentNotFoundError
+
+	// Handle status codes
+	switch resp.StatusCode {
+	case http.StatusOK:
+		t := &types.Torrent{
+			Id:               data.ID,
+			Name:             data.Filename,
+			Bytes:            data.Bytes,
+			Progress:         data.Progress,
+			Speed:            data.Speed,
+			Seeders:          data.Seeders,
+			Added:            data.Added,
+			Status:           types.TorrentStatus(data.Status),
+			Filename:         data.Filename,
+			OriginalFilename: data.OriginalFilename,
+			Links:            data.Links,
+			Debrid:           r.config.Name,
 		}
-		return nil, fmt.Errorf("realdebrid API error: Status: %d || Body %s", resp.StatusCode, string(bodyBytes))
+
+		t.Files = r.getTorrentFiles(t, data) // Get selected files
+		return t, nil
+	case http.StatusNotFound:
+		return nil, utils.TorrentNotFoundError
+
+	default:
+		// Get error body (limited to 1024 bytes like original)
+		errorBody := resp.String()
+		if len(errorBody) > 1024 {
+			errorBody = errorBody[:1024]
+		}
+		return nil, fmt.Errorf("realdebrid API error: Status: %d || Body: %s",
+			resp.StatusCode, errorBody)
 	}
-	var data torrentInfo
-	if err = json.NewDecoder(resp.Body).Decode(&data); err != nil {
-		return nil, err
+}
+
+func (r *RealDebrid) GetDownloadingStatus() []string {
+	return []string{"downloading", "magnet_conversion", "queued", "compressing", "uploading"}
+}
+
+func getStatus(status string) types.TorrentStatus {
+	switch status {
+	case "downloading", "magnet_conversion", "queued", "compressing", "uploading", "waiting_files_selection":
+		return types.TorrentStatusDownloading
+	case "downloaded":
+		return types.TorrentStatusDownloaded
+	default:
+		return types.TorrentStatusError
 	}
-	t := &types.Torrent{
-		Id:               data.ID,
-		Name:             data.Filename,
-		Bytes:            data.Bytes,
-		Folder:           data.OriginalFilename,
-		Progress:         data.Progress,
-		Speed:            data.Speed,
-		Seeders:          data.Seeders,
-		Added:            data.Added,
-		Status:           types.TorrentStatus(data.Status),
-		Filename:         data.Filename,
-		OriginalFilename: data.OriginalFilename,
-		Links:            data.Links,
-		Debrid:           r.config.Name,
-	}
-	t.Files = r.getTorrentFiles(t, data) // Get selected files
-	return t, nil
 }
 
 func (r *RealDebrid) UpdateTorrent(t *types.Torrent) error {
-	url := fmt.Sprintf("%s/torrents/info/%s", r.Host, t.Id)
-	req, _ := http.NewRequest(http.MethodGet, url, nil)
-	resp, err := r.client.Do(req)
+	var data torrentInfo
+	var errorResp map[string]interface{}
+
+	resp, err := r.client.R().
+		SetSuccessResult(&data).
+		SetErrorResult(&errorResp).
+		Get(fmt.Sprintf("/torrents/info/%s", t.Id))
+
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		if resp.StatusCode == http.StatusNotFound {
-			return utils.TorrentNotFoundError
-		}
-		bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return fmt.Errorf("realdebrid API error: Status: %d || Body: %s", resp.StatusCode, string(bodyBytes))
-	}
-	var data torrentInfo
-	if err = json.NewDecoder(resp.Body).Decode(&data); err != nil {
-		return err
-	}
-	t.Name = data.Filename
-	t.Bytes = data.Bytes
-	t.Folder = data.OriginalFilename
-	t.Progress = data.Progress
-	t.Status = types.TorrentStatus(data.Status)
-	t.Speed = data.Speed
-	t.Seeders = data.Seeders
-	t.Filename = data.Filename
-	t.OriginalFilename = data.OriginalFilename
-	t.Links = data.Links
-	t.Debrid = r.config.Name
-	t.Files, _ = r.getSelectedFiles(t, data) // Get selected files
 
-	return nil
+	// Handle status codes
+	switch resp.StatusCode {
+	case http.StatusOK:
+		t.Name = data.Filename
+		t.Bytes = data.Bytes
+		t.Progress = data.Progress
+		t.Status = types.TorrentStatus(data.Status)
+		t.Speed = data.Speed
+		t.Seeders = data.Seeders
+		t.Status = getStatus(data.Status)
+		t.Filename = data.Filename
+		t.OriginalFilename = data.OriginalFilename
+		t.Links = data.Links
+		t.Debrid = r.config.Name
+		t.Files, _ = r.getSelectedFiles(t, data) // Get selected files
+
+		return nil
+
+	case http.StatusNotFound:
+		return utils.TorrentNotFoundError
+
+	default:
+		// Get error body (limited to 1024 bytes like original)
+		errorBody := resp.String()
+		if len(errorBody) > 1024 {
+			errorBody = errorBody[:1024]
+		}
+		return fmt.Errorf("realdebrid API error: Status: %d || Body: %s",
+			resp.StatusCode, errorBody)
+	}
 }
 
 func (r *RealDebrid) CheckStatus(t *types.Torrent) (*types.Torrent, error) {
-	url := fmt.Sprintf("%s/torrents/info/%s", r.Host, t.Id)
-	req, _ := http.NewRequest(http.MethodGet, url, nil)
 	for {
-		resp, err := r.client.MakeRequest(req)
+		var data torrentInfo
+		var errorResp map[string]interface{}
+
+		resp, err := r.client.R().
+			SetSuccessResult(&data).
+			SetErrorResult(&errorResp).
+			Get(fmt.Sprintf("/torrents/info/%s", t.Id))
+
 		if err != nil {
 			r.logger.Info().Msgf("ERROR Checking file: %v", err)
 			return t, err
 		}
-		var data torrentInfo
-		if err = json.Unmarshal(resp, &data); err != nil {
-			return t, err
+
+		if resp.StatusCode != http.StatusOK {
+			return t, fmt.Errorf("realdebrid API error: Status: %d", resp.StatusCode)
 		}
+
 		debridStatus := data.Status
 		t.Name = data.Filename // Important because some magnet changes the name
-		t.Folder = data.OriginalFilename
 		t.Filename = data.Filename
 		t.OriginalFilename = data.OriginalFilename
 		t.Bytes = data.Bytes
@@ -465,7 +519,7 @@ func (r *RealDebrid) CheckStatus(t *types.Torrent) (*types.Torrent, error) {
 		t.Speed = data.Speed
 		t.Seeders = data.Seeders
 		t.Links = data.Links
-		t.Status = types.TorrentStatus(data.Status)
+		t.Status = getStatus(debridStatus)
 		t.Debrid = r.config.Name
 		t.Added = data.Added
 		if debridStatus == "waiting_files_selection" {
@@ -478,23 +532,26 @@ func (r *RealDebrid) CheckStatus(t *types.Torrent) (*types.Torrent, error) {
 			for _, f := range t.Files {
 				filesId = append(filesId, f.Id)
 			}
-			p := gourl.Values{
-				"files": {strings.Join(filesId, ",")},
-			}
-			payload := strings.NewReader(p.Encode())
-			req, _ := http.NewRequest(http.MethodPost, fmt.Sprintf("%s/torrents/selectFiles/%s", r.Host, t.Id), payload)
-			res, err := r.client.Do(req)
+
+			selectURL := fmt.Sprintf("/torrents/selectFiles/%s", t.Id)
+			selectResp, err := r.client.R().
+				SetFormData(map[string]string{
+					"files": strings.Join(filesId, ","),
+				}).
+				Post(selectURL)
+
 			if err != nil {
 				return t, err
 			}
-			if res.StatusCode != http.StatusNoContent {
-				if res.StatusCode == 509 {
+
+			if selectResp.StatusCode != http.StatusNoContent {
+				if selectResp.StatusCode == 509 {
 					return nil, utils.TooManyActiveDownloadsError
 				}
-				return t, fmt.Errorf("realdebrid API error: Status: %d", res.StatusCode)
+				return t, fmt.Errorf("realdebrid API error: Status: %d", selectResp.StatusCode)
 			}
 		} else if debridStatus == "downloaded" {
-			t.Status = types.TorrentStatusCompleted
+			t.Status = types.TorrentStatusDownloaded
 			t.Files, err = r.getSelectedFiles(t, data) // Get selected files
 			if err != nil {
 				return t, err
@@ -502,7 +559,7 @@ func (r *RealDebrid) CheckStatus(t *types.Torrent) (*types.Torrent, error) {
 
 			r.logger.Info().Msgf("Torrent: %s downloaded to RD", t.Name)
 			return t, nil
-		} else if utils.Contains(r.GetDownloadingStatus(), debridStatus) {
+		} else if t.Status == types.TorrentStatusDownloading {
 			if !t.DownloadUncached {
 				return t, fmt.Errorf("torrent: %s not cached", t.Name)
 			}
@@ -515,10 +572,12 @@ func (r *RealDebrid) CheckStatus(t *types.Torrent) (*types.Torrent, error) {
 }
 
 func (r *RealDebrid) DeleteTorrent(torrentId string) error {
-	url := fmt.Sprintf("%s/torrents/delete/%s", r.Host, torrentId)
-	req, _ := http.NewRequest(http.MethodDelete, url, nil)
-	if _, err := r.client.MakeRequest(req); err != nil {
+	resp, err := r.client.R().Delete(fmt.Sprintf("/torrents/delete/%s", torrentId))
+	if err != nil {
 		return err
+	}
+	if !resp.IsSuccessState() {
+		return fmt.Errorf("realdebrid API error: Status: %d", resp.StatusCode)
 	}
 	r.logger.Info().Msgf("Torrent: %s deleted from RD", torrentId)
 	return nil
@@ -571,64 +630,58 @@ func (r *RealDebrid) GetFileDownloadLinks(t *types.Torrent) error {
 		return firstErr
 	}
 
-	// Add links to cache
+	// AddOrUpdate links to cache
 	t.Files = files
 	return nil
 }
 
 func (r *RealDebrid) CheckLink(link string) error {
-	url := fmt.Sprintf("%s/unrestrict/check", r.Host)
-	payload := gourl.Values{
-		"link": {link},
-	}
-	req, _ := http.NewRequest(http.MethodPost, url, strings.NewReader(payload.Encode()))
-	resp, err := r.repairClient.Do(req)
+	resp, err := r.repairClient.R().
+		SetFormData(map[string]string{
+			"link": link,
+		}).
+		Post("/unrestrict/check")
+
 	if err != nil {
 		return err
 	}
+
 	if resp.StatusCode == http.StatusNotFound {
 		return utils.HosterUnavailableError // File has been removed
 	}
+
 	return nil
 }
 
 func (r *RealDebrid) getDownloadLink(account *account.Account, file *types.File) (types.DownloadLink, error) {
-	url := fmt.Sprintf("%s/unrestrict/link/", r.Host)
 	emptyLink := types.DownloadLink{}
-	_link := file.Link
+	link := file.Link
 	if strings.HasPrefix(file.Link, "https://real-debrid.com/d/") && len(file.Link) > 39 {
-		_link = file.Link[0:39]
+		link = file.Link[0:39]
 	}
-	payload := gourl.Values{
-		"link": {_link},
-	}
-	req, _ := http.NewRequest(http.MethodPost, url, strings.NewReader(payload.Encode()))
-	resp, err := account.Client().Do(req)
+	payload := url.Values{}
+	payload.Add("link", link)
+	var errResp ErrorResponse
+	var data UnrestrictResponse
+	resp, err := account.Client().R().
+		SetFormDataFromValues(payload).
+		SetErrorResult(&errResp).
+		SetSuccessResult(&data).
+		Post(fmt.Sprintf("%s/unrestrict/link/", r.Host))
 
 	if err != nil {
 		return emptyLink, err
 	}
-	defer func(Body io.ReadCloser) {
-		_ = Body.Close()
-	}(resp.Body)
 	if resp.StatusCode != http.StatusOK {
 		// Read the response body to get the error message
-		var data ErrorResponse
-		if err = json.NewDecoder(resp.Body).Decode(&data); err != nil {
-			return emptyLink, fmt.Errorf("error unmarshalling %d || %s", resp.StatusCode, err)
-		}
-		switch data.ErrorCode {
+		switch errResp.ErrorCode {
 		case 19, 24, 35:
 			return emptyLink, utils.HosterUnavailableError // File has been removed
 		case 23, 34, 36:
 			return emptyLink, utils.TrafficExceededError
 		default:
-			return emptyLink, fmt.Errorf("realdebrid API error: Status: %d || Code: %d", resp.StatusCode, data.ErrorCode)
+			return emptyLink, fmt.Errorf("realdebrid API error: Status: %d || Code: %d", resp.StatusCode, errResp.ErrorCode)
 		}
-	}
-	var data UnrestrictResponse
-	if err = json.NewDecoder(resp.Body).Decode(&data); err != nil {
-		return emptyLink, fmt.Errorf("realdebrid API error: Error unmarshalling response: %w", err)
 	}
 	if data.Download == "" {
 		return emptyLink, fmt.Errorf("realdebrid API error: download link not found")
@@ -674,7 +727,7 @@ func (r *RealDebrid) GetDownloadLink(t *types.Torrent, file *types.File) (types.
 			if !errors.Is(err, utils.TrafficExceededError) {
 				return downloadLink, err
 			}
-			// Add a delay before retrying
+			// AddOrUpdate a delay before retrying
 			time.Sleep(backOff)
 			backOff *= 2 // Exponential backoff
 			retries--
@@ -684,13 +737,18 @@ func (r *RealDebrid) GetDownloadLink(t *types.Torrent, file *types.File) (types.
 }
 
 func (r *RealDebrid) getTorrents(offset int, limit int) (int, []*types.Torrent, error) {
-	url := fmt.Sprintf("%s/torrents?limit=%d", r.Host, limit)
 	torrents := make([]*types.Torrent, 0)
+	request := r.client.R()
+
+	var data []TorrentsResponse
+	request.SetSuccessResult(&data)
 	if offset > 0 {
-		url = fmt.Sprintf("%s&offset=%d", url, offset)
+		request.SetQueryParam("offset", fmt.Sprintf("%d", offset))
 	}
-	req, _ := http.NewRequest(http.MethodGet, url, nil)
-	resp, err := r.client.Do(req)
+	if limit > 0 {
+		request.SetQueryParam("limit", fmt.Sprintf("%d", limit))
+	}
+	resp, err := request.Get("/torrents")
 
 	if err != nil {
 		return 0, torrents, err
@@ -701,16 +759,10 @@ func (r *RealDebrid) getTorrents(offset int, limit int) (int, []*types.Torrent, 
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		resp.Body.Close()
 		return 0, torrents, fmt.Errorf("realdebrid API error: %d", resp.StatusCode)
 	}
 
-	defer resp.Body.Close()
 	totalItems, _ := strconv.Atoi(resp.Header.Get("X-Total-Count"))
-	var data []TorrentsResponse
-	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
-		return 0, nil, fmt.Errorf("failed to decode response: %w", err)
-	}
 	filenames := map[string]struct{}{}
 	for _, t := range data {
 		if t.Status != "downloaded" {
@@ -721,7 +773,7 @@ func (r *RealDebrid) getTorrents(offset int, limit int) (int, []*types.Torrent, 
 			Name:             t.Filename,
 			Bytes:            t.Bytes,
 			Progress:         t.Progress,
-			Status:           types.TorrentStatusCompleted,
+			Status:           types.TorrentStatusDownloaded,
 			Filename:         t.Filename,
 			OriginalFilename: t.Filename,
 			Links:            t.Links,
@@ -807,18 +859,19 @@ func (r *RealDebrid) RefreshDownloadLinks() error {
 }
 
 func (r *RealDebrid) getDownloadLinks(account *account.Account, offset int, limit int) ([]types.DownloadLink, error) {
-	url := fmt.Sprintf("%s/downloads?limit=%d", r.Host, limit)
+	var data []DownloadsResponse
+	request := account.Client().R()
+	request.SetSuccessResult(&data)
+	request.SetQueryParam("limit", fmt.Sprintf("%d", limit))
 	if offset > 0 {
-		url = fmt.Sprintf("%s&offset=%d", url, offset)
+		request.SetQueryParam("offset", fmt.Sprintf("%d", offset))
 	}
-	req, _ := http.NewRequest(http.MethodGet, url, nil)
-	resp, err := account.Client().MakeRequest(req)
+	resp, err := request.Get(fmt.Sprintf("%s/downloads", r.Host))
 	if err != nil {
 		return nil, err
 	}
-	var data []DownloadsResponse
-	if err = json.Unmarshal(resp, &data); err != nil {
-		return nil, err
+	if resp.IsErrorState() {
+		return nil, fmt.Errorf("realdebrid API error: Status: %d", resp.StatusCode)
 	}
 	links := make([]types.DownloadLink, 0)
 	for _, d := range data {
@@ -837,10 +890,6 @@ func (r *RealDebrid) getDownloadLinks(account *account.Account, offset int, limi
 	return links, nil
 }
 
-func (r *RealDebrid) GetDownloadingStatus() []string {
-	return []string{"downloading", "magnet_conversion", "queued", "compressing", "uploading"}
-}
-
 func (r *RealDebrid) Config() config.Debrid {
 	return r.config
 }
@@ -849,17 +898,20 @@ func (r *RealDebrid) GetProfile() (*types.Profile, error) {
 	if r.Profile != nil {
 		return r.Profile, nil
 	}
-	url := fmt.Sprintf("%s/user", r.Host)
-	req, _ := http.NewRequest(http.MethodGet, url, nil)
+	var data profileResponse
 
-	resp, err := r.client.MakeRequest(req)
+	resp, err := r.client.R().
+		SetSuccessResult(&data).
+		Get("/user")
+
 	if err != nil {
 		return nil, err
 	}
-	var data profileResponse
-	if json.Unmarshal(resp, &data) != nil {
-		return nil, err
+
+	if !resp.IsSuccessState() {
+		return nil, fmt.Errorf("realdebrid API error: Status: %d", resp.StatusCode)
 	}
+
 	profile := &types.Profile{
 		Name:       r.config.Name,
 		Id:         data.Id,
@@ -875,15 +927,20 @@ func (r *RealDebrid) GetProfile() (*types.Profile, error) {
 }
 
 func (r *RealDebrid) GetAvailableSlots() (int, error) {
-	req, _ := http.NewRequest(http.MethodGet, fmt.Sprintf("%s/torrents/activeCount", r.Host), nil)
-	resp, err := r.client.MakeRequest(req)
-	if err != nil {
-		return 0, nil
-	}
 	var data AvailableSlotsResponse
-	if json.Unmarshal(resp, &data) != nil {
-		return 0, fmt.Errorf("error unmarshalling available slots response: %w", err)
+
+	resp, err := r.client.R().
+		SetSuccessResult(&data).
+		Get("/torrents/activeCount")
+
+	if err != nil {
+		return 0, err
 	}
+
+	if !resp.IsSuccessState() {
+		return 0, fmt.Errorf("realdebrid API error: Status: %d", resp.StatusCode)
+	}
+
 	return data.TotalSlots - data.ActiveSlots - r.config.MinimumFreeSlot, nil // Ensure we maintain minimum active pots
 }
 
@@ -909,42 +966,30 @@ func (r *RealDebrid) syncAccount(account *account.Account) error {
 	if account.Token == "" {
 		return fmt.Errorf("account %s has no token", account.Username)
 	}
-	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("%s/user", r.Host), nil)
-	if err != nil {
-		return fmt.Errorf("error creating request for account %s: %w", account.Username, err)
-	}
-	resp, err := account.Client().Do(req)
+	var profile profileResponse
+	resp, err := account.Client().R().
+		SetSuccessResult(&profile).
+		Get(fmt.Sprintf("%s/user", r.Host))
 	if err != nil {
 		return fmt.Errorf("error checking account %s: %w", account.Username, err)
 	}
-	if resp.StatusCode != http.StatusOK {
-		resp.Body.Close()
-		return fmt.Errorf("account %s is not valid, status code: %d", account.Username, resp.StatusCode)
-	}
-	defer resp.Body.Close()
-	var profile profileResponse
-	if err := json.NewDecoder(resp.Body).Decode(&profile); err != nil {
-		return fmt.Errorf("error decoding profile for account %s: %w", account.Username, err)
+	if resp.IsErrorState() {
+		return fmt.Errorf("error checking account %s, status code: %d", account.Username, resp.StatusCode)
 	}
 	account.Username = profile.Username
 
-	// Get traffic usage
-	trafficReq, err := http.NewRequest(http.MethodGet, fmt.Sprintf("%s/traffic/details", r.Host), nil)
-	if err != nil {
-		return fmt.Errorf("error creating request for traffic details for account %s: %w", account.Username, err)
-	}
-	trafficResp, err := account.Client().Do(trafficReq)
+	var trafficData TrafficResponse
+	trafficResp, err := account.Client().R().
+		SetSuccessResult(&trafficData).
+		Get(fmt.Sprintf("%s/traffic/details", r.Host))
 	if err != nil {
 		return fmt.Errorf("error checking traffic for account %s: %w", account.Username, err)
 	}
 	if trafficResp.StatusCode != http.StatusOK {
-		trafficResp.Body.Close()
 		return fmt.Errorf("error checking traffic for account %s, status code: %d", account.Username, trafficResp.StatusCode)
 	}
 
-	defer trafficResp.Body.Close()
-	var trafficData TrafficResponse
-	if err := json.NewDecoder(trafficResp.Body).Decode(&trafficData); err != nil {
+	if len(trafficData) == 0 {
 		// Skip logging traffic error
 		account.TrafficUsed.Store(0)
 	} else {
@@ -953,20 +998,15 @@ func (r *RealDebrid) syncAccount(account *account.Account) error {
 			account.TrafficUsed.Store(todayData.Bytes)
 		}
 	}
-	//r.accountsManager.Update(account)
 	return nil
 }
 
 func (r *RealDebrid) DeleteDownloadLink(account *account.Account, downloadLink types.DownloadLink) error {
-	url := fmt.Sprintf("%s/downloads/delete/%s", r.Host, downloadLink.Id)
-	req, _ := http.NewRequest(http.MethodDelete, url, nil)
-	resp, err := account.Client().Do(req)
+	resp, err := account.Client().R().
+		Delete(fmt.Sprintf("%s/downloads/delete/%s", r.Host, downloadLink.Id))
 	if err != nil {
 		return err
 	}
-	defer func(Body io.ReadCloser) {
-		_ = Body.Close()
-	}(resp.Body)
 	if resp.StatusCode != http.StatusNoContent {
 		return fmt.Errorf("realdebrid API error: %d", resp.StatusCode)
 	}

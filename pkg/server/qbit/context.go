@@ -91,7 +91,7 @@ func (q *QBit) categoryContext(next http.Handler) http.Handler {
 
 // authContext creates a middleware that extracts the Arr host and token from the Authorization header
 // and adds it to the request context.
-// This is used to identify the Arr instance for the request.
+// This is used to identify the Arr instance for the utils.
 // Only a valid host and token will be added to the context/config. The rest are manual
 func (q *QBit) authContext(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

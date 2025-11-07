@@ -64,7 +64,7 @@ func (m *Manager) GetDownloadLink(torrent *storage.Torrent, filename string) (ty
 
 		if dl.Empty() {
 			m.downloadSG.Forget(fileLink)
-			return types.DownloadLink{}, fmt.Errorf("download link is empty for %s in torrent %s", filename, torrent)
+			return types.DownloadLink{}, fmt.Errorf("download link is empty for %s in torrent %s", filename, torrent.Name)
 		}
 
 		return dl, nil

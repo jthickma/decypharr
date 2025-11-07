@@ -12,10 +12,8 @@ func (m *Manager) RemoveFromDebrid(placement *storage.Placement) error {
 	return client.DeleteTorrent(placement.ID)
 }
 
-func (m *Manager) RemoveActivePlacements(t *storage.Torrent) error {
-	placement := t.GetActivePlacement()
-	if placement == nil {
-		return nil
+func (m *Manager) RemoveTorrentPlacements(t *storage.Torrent) {
+	for _, placement := range t.Placements {
+		_ = m.RemoveFromDebrid(placement)
 	}
-	return m.RemoveFromDebrid(placement)
 }

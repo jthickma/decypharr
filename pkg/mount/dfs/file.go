@@ -11,7 +11,7 @@ import (
 	"github.com/hanwen/go-fuse/v2/fs"
 	"github.com/hanwen/go-fuse/v2/fuse"
 	"github.com/rs/zerolog"
-	"github.com/sirrobot01/decypharr/pkg/debrid/types"
+	"github.com/sirrobot01/decypharr/pkg/manager"
 	"github.com/sirrobot01/decypharr/pkg/mount/dfs/config"
 	"github.com/sirrobot01/decypharr/pkg/mount/dfs/vfs"
 )
@@ -19,17 +19,12 @@ import (
 // File implements a FUSE file with sparse file caching
 type File struct {
 	fs.Inode
-	config      *config.FuseConfig
-	logger      zerolog.Logger
-	torrentName string
-	torrentFile types.File
-	createdAt   time.Time
-	content     []byte // For files like version.txt
-	vfs         *vfs.Manager
-}
-
-func (f *File) IsRemote() bool {
-	return f.vfs != nil && f.torrentName != "" && len(f.content) == 0
+	config    *config.FuseConfig
+	logger    zerolog.Logger
+	info      *manager.FileInfo
+	createdAt time.Time
+	content   []byte // For files like version.txt
+	vfs       *vfs.Manager
 }
 
 // FileHandle implements file operations with VFS
@@ -51,15 +46,12 @@ var _ = (fs.FileFlusher)((*FileHandle)(nil))
 var _ = (fs.FileFsyncer)((*FileHandle)(nil))
 
 // newFile creates a new file
-func newFile(vfsCache *vfs.Manager, config *config.FuseConfig, torrentName string, torrentFile types.File, createdAt time.Time, content []byte, logger zerolog.Logger) *File {
+func newFile(vfsCache *vfs.Manager, config *config.FuseConfig, info *manager.FileInfo, logger zerolog.Logger) *File {
 	return &File{
-		config:      config,
-		logger:      logger,
-		torrentName: torrentName,
-		torrentFile: torrentFile,
-		content:     content,
-		createdAt:   createdAt,
-		vfs:         vfsCache,
+		config: config,
+		logger: logger,
+		info:   info,
+		vfs:    vfsCache,
 	}
 }
 
@@ -72,10 +64,10 @@ func (f *File) Getattr(ctx context.Context, fh fs.FileHandle, out *fuse.AttrOut)
 		modTime = uint64(f.createdAt.Unix())
 	}
 	out.Mode = 0644 | fuse.S_IFREG
-	out.Size = uint64(f.torrentFile.Size)
+	out.Size = uint64(f.info.Size())
 	out.Nlink = 1 // Files always have 1 link (themselves)
 	out.Blksize = 4096
-	out.Blocks = (uint64(f.torrentFile.Size) + 511) / 512 // Number of 512-byte blocks
+	out.Blocks = (uint64(f.info.Size()) + 511) / 512 // Number of 512-byte blocks
 	out.Uid = f.config.UID
 	out.Gid = f.config.GID
 	out.Atime = modTime
@@ -105,7 +97,7 @@ func (fh *FileHandle) Read(ctx context.Context, dest []byte, off int64) (fuse.Re
 		return nil, syscall.EBADF
 	}
 
-	if off >= fh.file.torrentFile.Size {
+	if off >= fh.file.info.Size() {
 		return fuse.ReadResultData([]byte{}), 0
 	}
 
@@ -119,10 +111,10 @@ func (fh *FileHandle) Read(ctx context.Context, dest []byte, off int64) (fuse.Re
 	// This prevents unnecessary sparse file creation when file browsers
 	// just open files for metadata without actually reading content
 	// Uses sync.Once to ensure thread-safe creation
-	if fh.file.IsRemote() {
+	if fh.file.info.IsRemote() {
 		fh.vfsOnce.Do(func() {
 			var err error
-			fh.vfsFile, err = fh.file.vfs.CreateReader(fh.file.torrentName, fh.file.torrentFile)
+			fh.vfsFile, err = fh.file.vfs.CreateReader(fh.file.info)
 			fh.vfsCreateErr = err
 		})
 
@@ -137,8 +129,8 @@ func (fh *FileHandle) Read(ctx context.Context, dest []byte, off int64) (fuse.Re
 		return nil, syscall.EIO
 	}
 
-	// Use ReadAtWithDownload for direct reading with download support
-	n, err := fh.vfsFile.ReadAtWithDownload(ctx, dest, off)
+	// Use ReadAt for direct reading with download support
+	n, err := fh.vfsFile.ReadAt(ctx, dest, off)
 	if err != nil && err != io.EOF {
 		return nil, syscall.EIO
 	}

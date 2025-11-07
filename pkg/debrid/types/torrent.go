@@ -1,13 +1,10 @@
 package types
 
 import (
-	"fmt"
 	"os"
-	"path/filepath"
 	"sync"
 	"time"
 
-	"github.com/sirrobot01/decypharr/internal/logger"
 	"github.com/sirrobot01/decypharr/internal/utils"
 	"github.com/sirrobot01/decypharr/pkg/arr"
 )
@@ -16,7 +13,6 @@ type Torrent struct {
 	Id               string          `json:"id"`
 	InfoHash         string          `json:"info_hash"`
 	Name             string          `json:"name"`
-	Folder           string          `json:"folder"`
 	Filename         string          `json:"filename"`
 	OriginalFilename string          `json:"original_filename"`
 	Size             int64           `json:"size"`
@@ -41,6 +37,13 @@ type Torrent struct {
 	sync.Mutex
 }
 
+func (t *Torrent) GetSize() int64 {
+	if t.Size == 0 {
+		return t.Bytes
+	}
+	return t.Size
+}
+
 func (t *Torrent) Copy() *Torrent {
 	t.Lock()
 	defer t.Unlock()
@@ -54,7 +57,6 @@ func (t *Torrent) Copy() *Torrent {
 		Id:               t.Id,
 		InfoHash:         t.InfoHash,
 		Name:             t.Name,
-		Folder:           t.Folder,
 		Filename:         t.Filename,
 		OriginalFilename: t.OriginalFilename,
 		Size:             t.Size,
@@ -72,29 +74,6 @@ func (t *Torrent) Copy() *Torrent {
 	}
 }
 
-func (t *Torrent) GetSymlinkFolder(parent string) string {
-	return filepath.Join(parent, t.Arr.Name, t.Folder)
-}
-
-func (t *Torrent) GetMountFolder(rClonePath string) (string, error) {
-	_log := logger.Default()
-	possiblePaths := []string{
-		t.OriginalFilename,
-		t.Filename,
-		utils.RemoveExtension(t.OriginalFilename),
-	}
-
-	for _, path := range possiblePaths {
-		_p := filepath.Join(rClonePath, path)
-		_log.Trace().Msgf("Checking path: %s", _p)
-		_, err := os.Stat(_p)
-		if !os.IsNotExist(err) {
-			return path, nil
-		}
-	}
-	return "", fmt.Errorf("no path found")
-}
-
 func (t *Torrent) GetFile(filename string) (File, bool) {
 	f, ok := t.Files[filename]
 	if !ok {
@@ -105,6 +84,7 @@ func (t *Torrent) GetFile(filename string) (File, bool) {
 
 func (t *Torrent) GetFiles() []File {
 	files := make([]File, 0, len(t.Files))
+
 	for _, f := range t.Files {
 		if !f.Deleted {
 			files = append(files, f)

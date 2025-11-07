@@ -7,7 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	debridTypes "github.com/sirrobot01/decypharr/pkg/debrid/types"
-	torrentpkg "github.com/sirrobot01/decypharr/pkg/storage"
+	"github.com/sirrobot01/decypharr/pkg/storage"
 )
 
 func ptrTime(t time.Time) *time.Time {
@@ -17,7 +17,7 @@ func ptrTime(t time.Time) *time.Time {
 // This is in-charge of moving torrents between different debrid services
 
 // SwitchTorrent moves a torrent from one debrid to another
-func (m *Manager) SwitchTorrent(ctx context.Context, infohash, targetDebrid string, keepOld, waitComplete bool) (*torrentpkg.SwitcherJob, error) {
+func (m *Manager) SwitchTorrent(ctx context.Context, infohash, targetDebrid string, keepOld, waitComplete bool) (*storage.SwitcherJob, error) {
 	// Get the torrent
 	torrent, err := m.GetTorrent(infohash)
 	if err != nil {
@@ -26,11 +26,11 @@ func (m *Manager) SwitchTorrent(ctx context.Context, infohash, targetDebrid stri
 
 	// Check if already on target debrid
 	if torrent.ActiveDebrid == targetDebrid {
-		return nil, torrentpkg.ErrAlreadyOnDebrid
+		return nil, storage.ErrAlreadyOnDebrid
 	}
 
 	// Need to actually migrate - create job
-	job := &torrentpkg.SwitcherJob{
+	job := &storage.SwitcherJob{
 		ID:           uuid.New().String(),
 		InfoHash:     infohash,
 		SourceDebrid: torrent.ActiveDebrid,
@@ -52,7 +52,7 @@ func (m *Manager) SwitchTorrent(ctx context.Context, infohash, targetDebrid stri
 }
 
 // executeMigration performs the actual torrent migration - COMPLETE IMPLEMENTATION
-func (m *Manager) executeMigration(ctx context.Context, job *torrentpkg.SwitcherJob, torrent *torrentpkg.Torrent) {
+func (m *Manager) executeMigration(ctx context.Context, job *storage.SwitcherJob, torrent *storage.Torrent) {
 	m.logger.Info().
 		Str("job_id", job.ID).
 		Str("torrent", torrent.Name).
@@ -61,8 +61,8 @@ func (m *Manager) executeMigration(ctx context.Context, job *torrentpkg.Switcher
 		Msg("Starting torrent migration")
 
 	// Update torrent status
-	torrent.Status = debridTypes.TorrentStatusSwitching
-	_ = m.UpdateTorrent(torrent)
+	torrent.Status = debridTypes.TorrentStatusDownloading
+	_ = m.AddOrUpdate(torrent, nil)
 
 	// Get target debrid client
 	targetClient := m.DebridClient(job.TargetDebrid)
@@ -95,14 +95,16 @@ func (m *Manager) executeMigration(ctx context.Context, job *torrentpkg.Switcher
 		// Archive and optionally delete from source
 		sourcePlacement, ok := torrent.Placements[job.SourceDebrid]
 		if ok && sourcePlacement != nil {
-			torrent.RemovePlacement(job.SourceDebrid, func(placement *torrentpkg.Placement) error {
+			torrent.RemovePlacement(job.SourceDebrid, func(placement *storage.Placement) error {
 				return m.RemoveFromDebrid(sourcePlacement)
 			})
 		}
 	}
 
 	// Save updated torrent
-	if err := m.UpdateTorrent(torrent); err != nil {
+	if err := m.AddOrUpdate(torrent, func(t *storage.Torrent) {
+		m.RefreshEntries(false)
+	}); err != nil {
 		job.Status = "failed"
 		job.Error = fmt.Sprintf("failed to update torrent: %v", err)
 		m.logger.Error().Err(err).Msg("Failed to update torrent after migration")

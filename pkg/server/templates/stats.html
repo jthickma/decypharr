@@ -88,7 +88,7 @@
                     <div class="flex gap-2">
                         <a href="{{.URLBase}}debug/logs/rclone" class="btn btn-sm btn-outline" target="_blank" id="rclone-logs-btn">
                             <i class="bi bi-arrow-right"></i>
-                            View Rclone Logs
+                            View Logs
                         </a>
                     </div>
                 </div>
@@ -234,7 +234,7 @@
 
             html += '</div>';
 
-            // Add mount information if available
+            // AddOrUpdate mount information if available
             if (data.mounts && Object.keys(data.mounts).length > 0) {
                 html += `
                     <div class="mt-6">
@@ -329,7 +329,7 @@
             }
             html += '</div>';
 
-            // Add active transfers if available
+            // AddOrUpdate active transfers if available
             if (rclone.core && rclone.core.transferring && rclone.core.transferring.length > 0) {
                 let transferring = rclone.core.transferring;
                 html += `
@@ -366,7 +366,7 @@
                 html += '</div></div>';
             }
 
-            // Add mount information if available
+            // AddOrUpdate mount information if available
             if (rclone.mounts && Object.keys(rclone.mounts).length > 0) {
                 html += `
                     <div class="mt-6">
@@ -405,7 +405,7 @@
                 html += '</div></div>';
             }
 
-            // Add bandwidth stats if available
+            // AddOrUpdate bandwidth stats if available
             if (rclone.bandwidth && rclone.bandwidth.rate !== "off") {
                 html += `
                     <div class="mt-6">
@@ -481,7 +481,7 @@
                             </div>
                 `;
                 
-                // Add accounts section if there are accounts
+                // AddOrUpdate accounts section if there are accounts
                 if (accounts && accounts.length > 0) {
                     html += `
                         <div class="mt-6">

@@ -30,9 +30,8 @@ type Migrator struct {
 
 // NewMigrator creates a new migrator
 func NewMigrator(storage *storage.Storage) *Migrator {
-	cfg := config.Get()
-	cacheDir := filepath.Join(cfg.Path, "cache")
-	backupPath := filepath.Join(cfg.Path, "backups")
+	cacheDir := filepath.Join(config.GetMainPath(), "cache")
+	backupPath := filepath.Join(config.GetMainPath(), "backups")
 
 	return &Migrator{
 		storage:    storage,
@@ -187,7 +186,7 @@ func (m *Migrator) runMigration(ctx context.Context, cachedTorrents map[string][
 		}
 
 		// Save to new storage
-		if err := m.storage.Add(managed); err != nil {
+		if err := m.storage.AddOrUpdate(managed); err != nil {
 			m.logger.Error().Err(err).Str("infohash", infohash).Msg("Failed to add managed torrent")
 			status.Errors++
 			status.ErrorList = append(status.ErrorList, fmt.Sprintf("Failed to add %s: %v", managed.Name, err))
@@ -312,7 +311,7 @@ func (m *Migrator) mergeCachedTorrents(cachedList []*storage.CachedTorrent) (*st
 	base := cachedList[0]
 	managed := base.ToManagedTorrent()
 
-	// Add placements from other debrids
+	// AddOrUpdate placements from other debrids
 	for i := 1; i < len(cachedList); i++ {
 		other := cachedList[i]
 
@@ -328,11 +327,11 @@ func (m *Migrator) mergeCachedTorrents(cachedList []*storage.CachedTorrent) (*st
 		}
 
 		// Determine placement status
-		status := debridTypes.TorrentStatusCompleted
+		status := debridTypes.TorrentStatusDownloaded
 		if other.Bad {
 			status = debridTypes.TorrentStatusError
 		} else if other.IsComplete {
-			status = debridTypes.TorrentStatusCompleted
+			status = debridTypes.TorrentStatusDownloaded
 		}
 
 		// Create placement
@@ -356,7 +355,7 @@ func (m *Migrator) mergeCachedTorrents(cachedList []*storage.CachedTorrent) (*st
 		// Merge files - add any files not in the base and populate placement files
 		if other.Files != nil {
 			for fileName, file := range other.Files {
-				// Add to global files if not exists
+				// AddOrUpdate to global files if not exists
 				if _, exists := managed.Files[fileName]; !exists {
 					managed.Files[fileName] = &storage.File{
 						Name:      fileName,
@@ -366,7 +365,7 @@ func (m *Migrator) mergeCachedTorrents(cachedList []*storage.CachedTorrent) (*st
 					}
 				}
 
-				// Add placement-specific file data
+				// AddOrUpdate placement-specific file data
 				placement.Files[fileName] = &storage.PlacementFile{
 					Id:   file.Id,
 					Link: file.Link,
@@ -391,71 +390,10 @@ func (m *Migrator) mergeCachedTorrents(cachedList []*storage.CachedTorrent) (*st
 // activateBestPlacement finds and activates the first placement that is completed
 func (m *Migrator) activateBestPlacement(torrent *storage.Torrent) {
 	for debrid, placement := range torrent.Placements {
-		if placement.Status == debridTypes.TorrentStatusCompleted {
+		if placement.Status == debridTypes.TorrentStatusDownloaded {
 			placement.IsActive = true
 			torrent.ActiveDebrid = debrid
 			return
 		}
 	}
-}
-
-// createBackup creates a backup of the cache directory
-func (m *Migrator) createBackup() error {
-	// Ensure backup directory exists
-	if err := os.MkdirAll(m.backupPath, 0755); err != nil {
-		return fmt.Errorf("failed to create backup directory: %w", err)
-	}
-
-	// Check if cache directory exists
-	if _, err := os.Stat(m.cacheDir); os.IsNotExist(err) {
-		m.logger.Info().Msg("No cache directory to backup")
-		return nil
-	}
-
-	// Create backup with timestamp
-	timestamp := time.Now().Format("20060102_150405")
-	backupDir := filepath.Join(m.backupPath, fmt.Sprintf("cache_%s", timestamp))
-
-	// Copy cache directory to backup
-	if err := m.copyDir(m.cacheDir, backupDir); err != nil {
-		return fmt.Errorf("failed to copy cache directory: %w", err)
-	}
-
-	m.logger.Info().Str("path", backupDir).Msg("Created cache backup")
-
-	return nil
-}
-
-// copyDir recursively copies a directory
-func (m *Migrator) copyDir(src, dst string) error {
-	// Create destination directory
-	if err := os.MkdirAll(dst, 0755); err != nil {
-		return err
-	}
-
-	entries, err := os.ReadDir(src)
-	if err != nil {
-		return err
-	}
-
-	for _, entry := range entries {
-		srcPath := filepath.Join(src, entry.Name())
-		dstPath := filepath.Join(dst, entry.Name())
-
-		if entry.IsDir() {
-			if err := m.copyDir(srcPath, dstPath); err != nil {
-				return err
-			}
-		} else {
-			data, err := os.ReadFile(srcPath)
-			if err != nil {
-				return err
-			}
-			if err := os.WriteFile(dstPath, data, 0644); err != nil {
-				return err
-			}
-		}
-	}
-
-	return nil
 }

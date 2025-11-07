@@ -1,11 +1,7 @@
 package rclone
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
 	"os/exec"
 	"runtime"
@@ -14,52 +10,6 @@ import (
 
 	"github.com/sirrobot01/decypharr/internal/config"
 )
-
-var httpClient = http.DefaultClient
-
-func makeRequest(req RCRequest, close bool) (*http.Response, error) {
-	reqBody, err := json.Marshal(req.Args)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
-	}
-
-	url := fmt.Sprintf("http://localhost:%s/%s", RCPort, req.Command)
-	httpReq, err := http.NewRequest("POST", url, bytes.NewBuffer(reqBody))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	resp, err := httpClient.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("failed to make request: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		// Read the response body to get more details
-		defer func(Body io.ReadCloser) {
-			_ = Body.Close()
-		}(resp.Body)
-		var errorResp RCResponse
-		if err := json.NewDecoder(resp.Body).Decode(&errorResp); err != nil {
-			return nil, fmt.Errorf("request failed with status %s, but could not decode error response: %w", resp.Status, err)
-		}
-		if errorResp.Error != "" {
-			return nil, fmt.Errorf("%s", errorResp.Error)
-		} else {
-			return nil, fmt.Errorf("request failed with status %s and no error message", resp.Status)
-		}
-	}
-
-	if close {
-		defer func() {
-			_ = resp.Body.Close()
-		}()
-	}
-
-	return resp, nil
-}
 
 // mountWithRetry attempts to mount with retry logic
 func (m *Mount) mountWithRetry(maxRetries int) error {
@@ -132,22 +82,22 @@ func (m *Mount) performMount() error {
 		"VolumeName":    fmt.Sprintf("decypharr-%s", m.Provider),
 	}
 
-	if cfg.Rclone.AsyncRead != nil {
-		mountOpt["AsyncRead"] = *cfg.Rclone.AsyncRead
+	if cfg.Mount.Rclone.AsyncRead != nil {
+		mountOpt["AsyncRead"] = *cfg.Mount.Rclone.AsyncRead
 	}
 
-	if cfg.Rclone.UseMmap {
-		mountOpt["UseMmap"] = cfg.Rclone.UseMmap
+	if cfg.Mount.Rclone.UseMmap {
+		mountOpt["UseMmap"] = cfg.Mount.Rclone.UseMmap
 	}
 
-	if cfg.Rclone.Transfers != 0 {
-		mountOpt["Transfers"] = cfg.Rclone.Transfers
+	if cfg.Mount.Rclone.Transfers != 0 {
+		mountOpt["Transfers"] = cfg.Mount.Rclone.Transfers
 	}
 
 	configOpts := make(map[string]interface{})
 
-	if cfg.Rclone.BufferSize != "" {
-		configOpts["BufferSize"] = cfg.Rclone.BufferSize
+	if cfg.Mount.Rclone.BufferSize != "" {
+		configOpts["BufferSize"] = cfg.Mount.Rclone.BufferSize
 	}
 
 	if len(configOpts) > 0 {
@@ -155,91 +105,84 @@ func (m *Mount) performMount() error {
 		mountArgs["_config"] = configOpts
 	}
 	vfsOpt := map[string]interface{}{
-		"CacheMode":    cfg.Rclone.VfsCacheMode,
-		"DirCacheTime": cfg.Rclone.DirCacheTime,
+		"CacheMode":    cfg.Mount.Rclone.VfsCacheMode,
+		"DirCacheTime": cfg.Mount.Rclone.DirCacheTime,
 	}
 	vfsOpt["PollInterval"] = 0 // Poll interval not supported for webdav, set to 0
 
-	// Add VFS options if caching is enabled
-	if cfg.Rclone.VfsCacheMode != "off" {
+	// AddOrUpdate VFS options if caching is enabled
+	if cfg.Mount.Rclone.VfsCacheMode != "off" {
 
-		if cfg.Rclone.VfsCacheMaxAge != "" {
-			vfsOpt["CacheMaxAge"] = cfg.Rclone.VfsCacheMaxAge
+		if cfg.Mount.Rclone.VfsCacheMaxAge != "" {
+			vfsOpt["CacheMaxAge"] = cfg.Mount.Rclone.VfsCacheMaxAge
 		}
-		if cfg.Rclone.VfsDiskSpaceTotal != "" {
-			vfsOpt["DiskSpaceTotalSize"] = cfg.Rclone.VfsDiskSpaceTotal
+		if cfg.Mount.Rclone.VfsDiskSpaceTotal != "" {
+			vfsOpt["DiskSpaceTotalSize"] = cfg.Mount.Rclone.VfsDiskSpaceTotal
 		}
-		if cfg.Rclone.VfsReadChunkSizeLimit != "" {
-			vfsOpt["ChunkSizeLimit"] = cfg.Rclone.VfsReadChunkSizeLimit
-		}
-
-		if cfg.Rclone.VfsCacheMaxSize != "" {
-			vfsOpt["CacheMaxSize"] = cfg.Rclone.VfsCacheMaxSize
-		}
-		if cfg.Rclone.VfsCachePollInterval != "" {
-			vfsOpt["CachePollInterval"] = cfg.Rclone.VfsCachePollInterval
-		}
-		if cfg.Rclone.VfsReadChunkSize != "" {
-			vfsOpt["ChunkSize"] = cfg.Rclone.VfsReadChunkSize
-		}
-		if cfg.Rclone.VfsReadAhead != "" {
-			vfsOpt["ReadAhead"] = cfg.Rclone.VfsReadAhead
+		if cfg.Mount.Rclone.VfsReadChunkSizeLimit != "" {
+			vfsOpt["ChunkSizeLimit"] = cfg.Mount.Rclone.VfsReadChunkSizeLimit
 		}
 
-		if cfg.Rclone.VfsCacheMinFreeSpace != "" {
-			vfsOpt["CacheMinFreeSpace"] = cfg.Rclone.VfsCacheMinFreeSpace
+		if cfg.Mount.Rclone.VfsCacheMaxSize != "" {
+			vfsOpt["CacheMaxSize"] = cfg.Mount.Rclone.VfsCacheMaxSize
+		}
+		if cfg.Mount.Rclone.VfsCachePollInterval != "" {
+			vfsOpt["CachePollInterval"] = cfg.Mount.Rclone.VfsCachePollInterval
+		}
+		if cfg.Mount.Rclone.VfsReadChunkSize != "" {
+			vfsOpt["ChunkSize"] = cfg.Mount.Rclone.VfsReadChunkSize
+		}
+		if cfg.Mount.Rclone.VfsReadAhead != "" {
+			vfsOpt["ReadAhead"] = cfg.Mount.Rclone.VfsReadAhead
 		}
 
-		if cfg.Rclone.VfsFastFingerprint {
-			vfsOpt["FastFingerprint"] = cfg.Rclone.VfsFastFingerprint
+		if cfg.Mount.Rclone.VfsCacheMinFreeSpace != "" {
+			vfsOpt["CacheMinFreeSpace"] = cfg.Mount.Rclone.VfsCacheMinFreeSpace
 		}
 
-		if cfg.Rclone.VfsReadChunkStreams != 0 {
-			vfsOpt["ChunkStreams"] = cfg.Rclone.VfsReadChunkStreams
+		if cfg.Mount.Rclone.VfsFastFingerprint {
+			vfsOpt["FastFingerprint"] = cfg.Mount.Rclone.VfsFastFingerprint
 		}
 
-		if cfg.Rclone.NoChecksum {
-			vfsOpt["NoChecksum"] = cfg.Rclone.NoChecksum
+		if cfg.Mount.Rclone.VfsReadChunkStreams != 0 {
+			vfsOpt["ChunkStreams"] = cfg.Mount.Rclone.VfsReadChunkStreams
 		}
-		if cfg.Rclone.NoModTime {
-			vfsOpt["NoModTime"] = cfg.Rclone.NoModTime
+
+		if cfg.Mount.Rclone.NoChecksum {
+			vfsOpt["NoChecksum"] = cfg.Mount.Rclone.NoChecksum
+		}
+		if cfg.Mount.Rclone.NoModTime {
+			vfsOpt["NoModTime"] = cfg.Mount.Rclone.NoModTime
 		}
 	}
 
-	// Add mount options based on configuration
-	if cfg.Rclone.UID != 0 {
-		vfsOpt["UID"] = cfg.Rclone.UID
+	// AddOrUpdate mount options based on configuration
+	if cfg.Mount.Rclone.UID != 0 {
+		vfsOpt["UID"] = cfg.Mount.Rclone.UID
 	}
-	if cfg.Rclone.GID != 0 {
-		vfsOpt["GID"] = cfg.Rclone.GID
+	if cfg.Mount.Rclone.GID != 0 {
+		vfsOpt["GID"] = cfg.Mount.Rclone.GID
 	}
 
-	if cfg.Rclone.Umask != "" {
-		umask, err := strconv.ParseInt(cfg.Rclone.Umask, 8, 32)
+	if cfg.Mount.Rclone.Umask != "" {
+		umask, err := strconv.ParseInt(cfg.Mount.Rclone.Umask, 8, 32)
 		if err == nil {
 			vfsOpt["Umask"] = uint32(umask)
 		}
 	}
 
-	if cfg.Rclone.AttrTimeout != "" {
-		if attrTimeout, err := time.ParseDuration(cfg.Rclone.AttrTimeout); err == nil {
+	if cfg.Mount.Rclone.AttrTimeout != "" {
+		if attrTimeout, err := time.ParseDuration(cfg.Mount.Rclone.AttrTimeout); err == nil {
 			mountOpt["AttrTimeout"] = attrTimeout.String()
 		}
 	}
 
 	mountArgs["vfsOpt"] = vfsOpt
 	mountArgs["mountOpt"] = mountOpt
-	// Make the mount request
-	req := RCRequest{
-		Command: "mount/mount",
-		Args:    mountArgs,
-	}
 
-	_, err := makeRequest(req, true)
-	if err != nil {
-		// Clean up mount point on failure
+	if err := m.client.Mount(mountArgs); err != nil {
 		_ = m.forceUnmount()
-		return fmt.Errorf("failed to create mount for %s: %w", m.Provider, err)
+		return fmt.Errorf("failed to mount %s via RC: %w", m.Provider, err)
 	}
 
 	// Store mount info
@@ -269,19 +212,12 @@ func (m *Mount) unmount() error {
 	m.logger.Info().Msg("Unmounting")
 
 	// Try RC unmount first
-	req := RCRequest{
-		Command: "mount/unmount",
-		Args: map[string]interface{}{
-			"mountPoint": mountInfo.LocalPath,
-		},
-	}
 
-	var rcErr error
-	_, rcErr = makeRequest(req, true)
+	err := m.client.Unmount(mountInfo.LocalPath)
 
 	// If RC unmount fails or server is not ready, try force unmount
-	if rcErr != nil {
-		m.logger.Warn().Err(rcErr).Msg("RC unmount failed, trying force unmount")
+	if err != nil {
+		m.logger.Warn().Err(err).Msg("RC unmount failed, trying force unmount")
 		if err := m.forceUnmount(); err != nil {
 			m.logger.Error().Err(err).Msg("Force unmount failed")
 			// Don't return error here, update the state anyway
@@ -291,8 +227,8 @@ func (m *Mount) unmount() error {
 	// Update mount info
 	mountInfo.Mounted = false
 	mountInfo.Error = ""
-	if rcErr != nil {
-		mountInfo.Error = rcErr.Error()
+	if err != nil {
+		mountInfo.Error = err.Error()
 	}
 	m.logger.Info().Msg("Unmount completed")
 	return nil
@@ -300,22 +236,17 @@ func (m *Mount) unmount() error {
 
 // createConfig creates an rclone config entry for the provider
 func (m *Mount) createConfig() error {
-	req := RCRequest{
-		Command: "config/create",
-		Args: map[string]interface{}{
-			"name": m.Provider,
-			"type": "webdav",
-			"parameters": map[string]interface{}{
-				"url":             m.WebDAVURL,
-				"vendor":          "other",
-				"pacer_min_sleep": "0",
-			},
+	args := map[string]interface{}{
+		"name": m.Provider,
+		"type": "webdav",
+		"parameters": map[string]interface{}{
+			"url":             m.WebDAVURL,
+			"vendor":          "other",
+			"pacer_min_sleep": "0",
 		},
 	}
-
-	_, err := makeRequest(req, true)
-	if err != nil {
-		return fmt.Errorf("failed to create config %s: %w", m.Provider, err)
+	if err := m.client.CreateConfig(args); err != nil {
+		return fmt.Errorf("failed to create rclone config for %s: %w", m.Provider, err)
 	}
 	return nil
 }

@@ -71,12 +71,9 @@ class ConfigManager {
             config.debrids.forEach(debrid => this.addDebridConfig(debrid));
         }
 
-        // Load Manager config
-        this.populateManagerSettings(config.manager);
-
         // Load virtual folders
-        if (config.manager && config.manager.custom_folders) {
-            this.populateVirtualFolders(config.manager.custom_folders);
+        if (config.custom_folders) {
+            this.populateVirtualFolders(config.custom_folders);
         }
 
         // Load Arr configs
@@ -88,10 +85,7 @@ class ConfigManager {
         this.populateRepairSettings(config.repair);
 
         // Load rclone config
-        this.populateRcloneSettings(config.rclone);
-
-        // Load DFS config
-        this.populateDFSSettings(config.dfs);
+        this.populateMountSettings(config.mount);
 
         // Load API token info
         this.populateAPIToken(config);
@@ -100,7 +94,9 @@ class ConfigManager {
     populateGeneralSettings(config) {
         const fields = [
             'log_level', 'url_base', 'bind_address', 'port',
-            'discord_webhook_url', 'min_file_size', 'max_file_size', 'remove_stalled_after'
+            'discord_webhook_url', 'min_file_size', 'max_file_size', 'remove_stalled_after',
+            'download_folder', 'refresh_interval', 'max_downloads', 'skip_pre_cache',
+            'always_rm_tracker_urls', 'folder_naming', 'refresh_dirs'
         ];
 
         fields.forEach(field => {
@@ -114,27 +110,6 @@ class ConfigManager {
         if (config.allowed_file_types && Array.isArray(config.allowed_file_types)) {
             document.querySelector('[name="allowed_file_types"]').value = config.allowed_file_types.join(', ');
         }
-    }
-
-    populateManagerSettings(managerConfig) {
-        if (!managerConfig) return;
-
-        const fields = [
-            'download_folder', 'refresh_interval', 'max_downloads', 'skip_pre_cache',
-            'always_rm_tracker_urls', 'folder_naming',
-            'rc_url', 'rc_user', 'rc_pass', 'refresh_dirs'
-        ];
-
-        fields.forEach(field => {
-            const element = document.querySelector(`[name="manager.${field}"]`);
-            if (element && managerConfig[field] !== undefined) {
-                if (element.type === 'checkbox') {
-                    element.checked = managerConfig[field];
-                } else {
-                    element.value = managerConfig[field];
-                }
-            }
-        });
     }
 
     populateRepairSettings(repairConfig) {
@@ -154,11 +129,38 @@ class ConfigManager {
         });
     }
 
+    populateMountSettings(mountConfig) {
+        if (!mountConfig) return;
+
+        // Handle mount type radio buttons
+        if (mountConfig.type) {
+            const typeRadio = document.querySelector(`input[name="mount.type"][value="${mountConfig.type}"]`);
+            if (typeRadio) {
+                typeRadio.checked = true;
+                // Trigger change event to switch to the correct tab
+                typeRadio.dispatchEvent(new Event('change'));
+            }
+        }
+
+        // Handle mount path
+        const mountPathElement = document.querySelector('[name="mount.mount_path"]');
+        if (mountPathElement && mountConfig.mount_path !== undefined) {
+            mountPathElement.value = mountConfig.mount_path;
+        }
+
+        // Then populate specific mount settings based on type
+        this.populateRcloneSettings(mountConfig.rclone);
+        this.populateDFSSettings(mountConfig.dfs);
+        this.populateExternalRcloneSettings(mountConfig.external_rclone);
+
+
+    }
+
     populateRcloneSettings(rcloneConfig) {
         if (!rcloneConfig) return;
 
         const fields = [
-            'enabled', 'rc_port', 'mount_path', 'cache_dir', 'transfers', 'vfs_cache_mode', 'vfs_cache_max_size', 'vfs_cache_max_age',
+            'port', 'cache_dir', 'transfers', 'vfs_cache_mode', 'vfs_cache_max_size', 'vfs_cache_max_age',
             'vfs_cache_poll_interval', 'vfs_read_chunk_size', 'vfs_read_chunk_size_limit', 'buffer_size', 'bw_limit',
             'uid', 'gid', 'vfs_read_ahead', 'attr_timeout', 'dir_cache_time', 'poll_interval', 'umask',
             'no_modtime', 'no_checksum', 'log_level', 'vfs_cache_min_free_space', 'vfs_fast_fingerprint', 'vfs_read_chunk_streams',
@@ -166,7 +168,7 @@ class ConfigManager {
         ];
 
         fields.forEach(field => {
-            const element = document.querySelector(`[name="rclone.${field}"]`);
+            const element = document.querySelector(`[name="mount.rclone.${field}"]`);
             if (element && rcloneConfig[field] !== undefined) {
                 if (element.type === 'checkbox') {
                     element.checked = rcloneConfig[field];
@@ -181,20 +183,31 @@ class ConfigManager {
         if (!dfsConfig) return;
 
         const fields = [
-            'enabled', 'mount_path', 'cache_dir', 'disk_cache_size', 'cache_expiry', 'cache_cleanup_interval',
+            'cache_dir', 'disk_cache_size', 'cache_expiry', 'cache_cleanup_interval',
             'chunk_size', 'read_ahead_size', 'max_concurrent_reads', 'daemon_timeout',
             'uid', 'gid', 'umask', 'allow_other', 'allow_root', 'default_permissions', 'async_read',
             'attr_timeout', 'entry_timeout', 'negative_timeout'
         ];
 
         fields.forEach(field => {
-            const element = document.querySelector(`[name="dfs.${field}"]`);
+            const element = document.querySelector(`[name="mount.dfs.${field}"]`);
             if (element && dfsConfig[field] !== undefined) {
                 if (element.type === 'checkbox') {
                     element.checked = dfsConfig[field];
                 } else {
                     element.value = dfsConfig[field];
                 }
+            }
+        });
+    }
+
+    populateExternalRcloneSettings(externalRcloneConfig) {
+        if (!externalRcloneConfig) return;
+        const fields = ['rc_url', 'rc_username', 'rc_password'];
+        fields.forEach(field => {
+            const element = document.querySelector(`[name="mount.external_rclone.${field}"]`);
+            if (element && externalRcloneConfig[field] !== undefined) {
+                element.value = externalRcloneConfig[field];
             }
         });
     }
@@ -312,27 +325,6 @@ class ConfigManager {
                         </div>
                     </div>
                     <div class="space-y-4">
-                        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                            <div>
-                                <label class="label" for="debrid[${index}].folder">
-                                    <span class=" font-medium">Mount/Rclone Folder</span>
-                                </label>
-                                <input type="text" class="input w-full" 
-                                       name="debrid[${index}].folder" id="debrid[${index}].folder" 
-                                       placeholder="/mnt/remote/realdebrid/__all__" required>
-                                <span class="text-sm opacity-70">Path where debrid files are mounted</span>
-                            </div>
-                            <div>
-                                  <label class="label" for="debrid[${index}].rclone_mount_path">
-                                      <span class=" font-medium">Custom Rclone Mount Path</span>
-                                      <span class="badge badge-ghost badge-sm">Optional</span>
-                                  </label>
-                                  <input type="text" class="input w-full" 
-                                         name="debrid[${index}].rclone_mount_path" id="debrid[${index}].rclone_mount_path" 
-                                         placeholder="/custom/mount/path (leave empty for global mount path)">
-                                  <span class="text-sm opacity-70">Custom mount path for this debrid service. If empty, uses global rclone mount path.</span>
-                            </div>
-                        </div>
                         <div class="grid grid-cols-2 lg:grid-cols-3 gap-3">
                             <div>
                                 <label class="label" for="debrid[${index}].rate_limit">
@@ -373,7 +365,7 @@ class ConfigManager {
                         <input type="text" class="input webdav-field" 
                                name="debrid[${index}].torrents_refresh_interval" 
                                id="debrid[${index}].torrents_refresh_interval" 
-                               placeholder="15s" value="15s">
+                               placeholder="10m" value="10m">
                         <span class="text-sm opacity-70">How often to refresh torrents list</span>
                     </div>
                     <div>
@@ -895,8 +887,8 @@ class ConfigManager {
 
         // Validate debrid services
         config.debrids.forEach((debrid, index) => {
-            if (!debrid.name || !debrid.api_key || !debrid.folder) {
-                errors.push(`Debrid service #${index + 1}: Name, API key, and folder are required`);
+            if (!debrid.name || !debrid.api_key ) {
+                errors.push(`Debrid service #${index + 1}: Name, API key are required`);
             }
         });
 
@@ -918,19 +910,13 @@ class ConfigManager {
             }
         }
 
-        if (config.rclone.enabled && config.rclone.mount_path === '') {
-            errors.push('Rclone mount path is required when Rclone is enabled');
+        if (config.mount.type === "") {
+            errors.push('Mount type is required when ');
         }
 
-        if (config.dfs.enabled && config.dfs.mount_path === '') {
-            errors.push('DFS mount path is required when DFS is enabled');
+        if (config.mount.mount_path === "") {
+            errors.push('Mount path is required when Rclone is enabled');
         }
-
-        // Check that only one mount system is enabled at a time
-        if (config.dfs.enabled && config.rclone.enabled) {
-            errors.push('Cannot enable both DFS and Rclone mounts at the same time. Please enable only one.');
-        }
-
         return {
             valid: errors.length === 0,
             errors
@@ -960,12 +946,17 @@ class ConfigManager {
             max_file_size: document.getElementById('maxFileSize').value,
             remove_stalled_after: document.getElementById('removeStalledAfter').value,
             callback_url: document.getElementById('callbackUrl').value,
+            download_folder: document.querySelector('[name="download_folder"]').value,
+            refresh_interval: document.querySelector('[name="refresh_interval"]').value || "30s",
+            max_downloads: parseInt(document.querySelector('[name="max_downloads"]').value) || 0,
+            skip_pre_cache: document.querySelector('[name="skip_pre_cache"]').checked,
+            always_rm_tracker_urls: document.querySelector('[name="always_rm_tracker_urls"]').checked,
+            folder_naming: document.querySelector('[name="folder_naming"]')?.value || "",
+            refresh_dirs: document.querySelector('[name="refresh_dirs"]')?.value || "",
+            custom_folders: this.collectVirtualFolders(),
 
             // Debrid configurations
             debrids: this.collectDebridConfigs(),
-
-            // Manager configuration
-            manager: this.collectManagerConfig(),
 
             // Arr configurations
             arrs: this.collectArrConfigs(),
@@ -973,11 +964,8 @@ class ConfigManager {
             // Repair configuration
             repair: this.collectRepairConfig(),
 
-            // Rclone configuration
-            rclone: this.collectRcloneConfig(),
-
-            // DFS configuration
-            dfs: this.collectDFSConfig()
+            // Mount configuration
+            mount: this.collectMountConfig()
         };
     }
 
@@ -991,10 +979,8 @@ class ConfigManager {
             const debrid = {
                 name: nameEl.value,
                 api_key: document.querySelector(`[name="debrid[${i}].api_key"]`).value,
-                folder: document.querySelector(`[name="debrid[${i}].folder"]`).value,
                 rate_limit: document.querySelector(`[name="debrid[${i}].rate_limit"]`).value,
                 minimum_free_slot: parseInt(document.querySelector(`[name="debrid[${i}].minimum_free_slot"]`).value) || 0,
-                rclone_mount_path: document.querySelector(`[name="debrid[${i}].rclone_mount_path"]`).value,
                 proxy: document.querySelector(`[name="debrid[${i}].proxy"]`).value,
                 download_uncached: document.querySelector(`[name="debrid[${i}].download_uncached"]`).checked,
                 unpack_rar: document.querySelector(`[name="debrid[${i}].unpack_rar"]`).checked,
@@ -1019,22 +1005,6 @@ class ConfigManager {
         }
 
         return debrids;
-    }
-
-    collectManagerConfig() {
-        return {
-            download_folder: document.querySelector('[name="manager.download_folder"]').value,
-            refresh_interval: document.querySelector('[name="manager.refresh_interval"]').value || "30s",
-            max_downloads: parseInt(document.querySelector('[name="manager.max_downloads"]').value) || 0,
-            skip_pre_cache: document.querySelector('[name="manager.skip_pre_cache"]').checked,
-            always_rm_tracker_urls: document.querySelector('[name="manager.always_rm_tracker_urls"]').checked,
-            folder_naming: document.querySelector('[name="manager.folder_naming"]')?.value || "",
-            rc_url: document.querySelector('[name="manager.rc_url"]')?.value || "",
-            rc_user: document.querySelector('[name="manager.rc_user"]')?.value || "",
-            rc_pass: document.querySelector('[name="manager.rc_pass"]')?.value || "",
-            refresh_dirs: document.querySelector('[name="manager.refresh_dirs"]')?.value || "",
-            custom_folders: this.collectVirtualFolders()
-        };
     }
 
     collectArrConfigs() {
@@ -1073,9 +1043,30 @@ class ConfigManager {
         };
     }
 
+    collectMountConfig() {
+        // Get the selected radio button value
+        const selectedMountType = document.querySelector('input[name="mount.type"]:checked');
+
+        return {
+            type: selectedMountType ? selectedMountType.value : 'dfs',
+            mount_path: document.querySelector('[name="mount.mount_path"]').value,
+            dfs: this.collectDFSConfig(),
+            rclone: this.collectRcloneConfig(),
+            external_rclone: this.collectExternalRclone()
+        };
+    }
+
+    collectExternalRclone() {
+        return {
+            rc_url: document.querySelector('[name="mount.external_rclone.rc_url"]')?.value || "",
+            rc_username: document.querySelector('[name="mount.external_rclone.rc_username"]')?.value || "",
+            rc_password: document.querySelector('[name="mount.external_rclone.rc_password"]')?.value || "",
+        };
+    }
+
     collectRcloneConfig() {
         const getElementValue = (name, defaultValue = '') => {
-            const element = document.querySelector(`[name="rclone.${name}"]`);
+            const element = document.querySelector(`[name="mount.rclone.${name}"]`);
             if (!element) return defaultValue;
 
             if (element.type === 'checkbox') {
@@ -1089,9 +1080,7 @@ class ConfigManager {
         };
 
         return {
-            enabled: getElementValue('enabled', false),
-            rc_port: getElementValue('rc_port', "5572"),
-            mount_path: getElementValue('mount_path'),
+            port: getElementValue('port', "5572"),
             buffer_size: getElementValue('buffer_size'),
             bw_limit: getElementValue('bw_limit'),
             cache_dir: getElementValue('cache_dir'),
@@ -1121,7 +1110,7 @@ class ConfigManager {
 
     collectDFSConfig() {
         const getElementValue = (name, defaultValue = '') => {
-            const element = document.querySelector(`[name="dfs.${name}"]`);
+            const element = document.querySelector(`[name="mount.dfs.${name}"]`);
             if (!element) return defaultValue;
 
             if (element.type === 'checkbox') {
@@ -1135,8 +1124,6 @@ class ConfigManager {
         };
 
         return {
-            enabled: getElementValue('enabled', false),
-            mount_path: getElementValue('mount_path'),
             cache_dir: getElementValue('cache_dir'),
             disk_cache_size: getElementValue('disk_cache_size'),
             cache_expiry: getElementValue('cache_expiry'),

@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,11 +16,8 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/sirrobot01/decypharr/internal/config"
 	"github.com/sirrobot01/decypharr/internal/logger"
+	"github.com/sirrobot01/decypharr/internal/rclone"
 	"github.com/sirrobot01/decypharr/pkg/manager"
-)
-
-const (
-	RCPort = "5572"
 )
 
 // Manager handles the rclone RC server and provides mount operations
@@ -31,13 +27,13 @@ type Manager struct {
 	logger        zerolog.Logger
 	ctx           context.Context
 	cancel        context.CancelFunc
-	httpClient    *http.Client
 	serverReady   chan struct{}
-	mountReady    chan struct{}
 	serverStarted bool
 	mu            sync.RWMutex
 	mounts        map[string]*Mount
 	manager       *manager.Manager
+
+	client *rclone.Client
 }
 
 type MountInfo struct {
@@ -62,25 +58,25 @@ type RCResponse struct {
 
 // NewManager creates a new rclone RC manager
 func NewManager(manager *manager.Manager) *Manager {
-	cfg := config.Get()
-	configDir := filepath.Join(cfg.Path, "rclone")
+	configDir := filepath.Join(config.GetMainPath(), "rclone")
+	_logger := logger.New("rclone")
 
 	// Ensure config directory exists
 	if err := os.MkdirAll(configDir, 0755); err != nil {
-		_logger := logger.New("rclone")
 		_logger.Error().Err(err).Msg("Failed to create rclone config directory")
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
+	rcServer := fmt.Sprintf("http://localhost:%s", config.Get().Mount.Rclone.Port)
+	rcloneClient := rclone.NewClient(rcServer, "", "", _logger)
 
 	m := &Manager{
 		configDir:   configDir,
-		logger:      logger.New("rclone"),
+		logger:      _logger,
 		ctx:         ctx,
 		cancel:      cancel,
-		httpClient:  &http.Client{Timeout: 60 * time.Second},
+		client:      rcloneClient,
 		serverReady: make(chan struct{}),
-		mountReady:  make(chan struct{}),
 		manager:     manager,
 	}
 	m.registerMounts()
@@ -89,14 +85,13 @@ func NewManager(manager *manager.Manager) *Manager {
 
 func (m *Manager) registerMounts() {
 	mounts := make(map[string]*Mount)
-	_, mountPaths := m.manager.MountPaths()
-	for _, mountInfo := range mountPaths {
-		mnt, err := NewMount(mountInfo, m.manager, m.logger)
+	for mountName := range m.manager.MountPaths() {
+		mnt, err := NewMount(mountName, m.manager, m.client)
 		if err != nil {
-			m.logger.Error().Err(err).Msgf("Failed to create rclone mount for debrid: %s", mountInfo.Name())
+			m.logger.Error().Err(err).Msgf("Failed to create rclone mount for debrid: %s", mountName)
 			continue
 		}
-		mounts[mountInfo.Name()] = mnt
+		mounts[mountName] = mnt
 	}
 	m.mu.Lock()
 	m.mounts = mounts
@@ -113,11 +108,6 @@ func (m *Manager) Start(ctx context.Context) error {
 	}
 
 	cfg := config.Get()
-	if !cfg.Rclone.Enabled {
-		m.logger.Info().Msg("Rclone is disabled, skipping RC server startup")
-		return nil
-	}
-
 	logFile := filepath.Join(logger.GetLogPath(), "rclone.log")
 
 	// Delete old log file if it exists
@@ -129,13 +119,13 @@ func (m *Manager) Start(ctx context.Context) error {
 
 	args := []string{
 		"rcd",
-		"--rc-addr", ":" + RCPort,
+		"--rc-addr", ":" + cfg.Mount.Rclone.Port,
 		"--rc-no-auth", // We'll handle auth at the application level
 		"--config", filepath.Join(m.configDir, "rclone.conf"),
 		"--log-file", logFile,
 	}
 
-	logLevel := cfg.Rclone.LogLevel
+	logLevel := cfg.Mount.Rclone.LogLevel
 	if logLevel != "" {
 		if !slices.Contains([]string{"DEBUG", "INFO", "NOTICE", "ERROR"}, logLevel) {
 			logLevel = "INFO"
@@ -143,9 +133,9 @@ func (m *Manager) Start(ctx context.Context) error {
 		args = append(args, "--log-level", logLevel)
 	}
 
-	if cfg.Rclone.CacheDir != "" {
-		if err := os.MkdirAll(cfg.Rclone.CacheDir, 0755); err == nil {
-			args = append(args, "--cache-dir", cfg.Rclone.CacheDir)
+	if cfg.Mount.Rclone.CacheDir != "" {
+		if err := os.MkdirAll(cfg.Mount.Rclone.CacheDir, 0755); err == nil {
+			args = append(args, "--cache-dir", cfg.Mount.Rclone.CacheDir)
 		}
 	}
 	m.cmd = exec.CommandContext(ctx, "rclone", args...)
@@ -174,7 +164,7 @@ func (m *Manager) Start(ctx context.Context) error {
 		// Start mounting here now
 
 		if err := m.waitForReady(30 * time.Second); err != nil {
-			m.logger.Error().Err(err).Msg("Rclone RC server did not become ready in time")
+			m.logger.Error().Err(err).Msg("Client RC server did not become ready in time")
 			return
 		}
 
@@ -194,29 +184,28 @@ func (m *Manager) Start(ctx context.Context) error {
 		}
 		m.mu.RUnlock()
 		wg.Wait()
-		close(m.mountReady)
 
 		// Wait for command to finish and log output
 		err := m.cmd.Wait()
 		switch {
 		case err == nil:
-			m.logger.Info().Msg("Rclone RC server exited normally")
+			m.logger.Info().Msg("Client RC server exited normally")
 
 		case errors.Is(err, context.Canceled):
-			m.logger.Info().Msg("Rclone RC server terminated: context canceled")
+			m.logger.Info().Msg("Client RC server terminated: context canceled")
 
 		case WasHardTerminated(err): // SIGKILL on *nix; non-zero exit on Windows
-			m.logger.Info().Msg("Rclone RC server hard-terminated")
+			m.logger.Info().Msg("Client RC server hard-terminated")
 
 		default:
 			if code, ok := ExitCode(err); ok {
 				m.logger.Debug().Int("exit_code", code).Err(err).
 					Str("stderr", stderr.String()).
 					Str("stdout", stdout.String()).
-					Msg("Rclone RC server error")
+					Msg("Client RC server error")
 			} else {
 				m.logger.Debug().Err(err).Str("stderr", stderr.String()).
-					Str("stdout", stdout.String()).Msg("Rclone RC server error (no exit code)")
+					Str("stdout", stdout.String()).Msg("Client RC server error (no exit code)")
 			}
 		}
 	}()
@@ -224,7 +213,7 @@ func (m *Manager) Start(ctx context.Context) error {
 }
 
 // Stop stops the rclone RC server and unmounts all mounts
-func (m *Manager) Stop(ctx context.Context) error {
+func (m *Manager) Stop() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -235,6 +224,21 @@ func (m *Manager) Stop(ctx context.Context) error {
 	m.logger.Info().Msg("Stopping rclone RC server")
 	// Cancel context and stop process
 	m.cancel()
+
+	// Stopping all mounts
+	var wg sync.WaitGroup
+	for name, mount := range m.mounts {
+		wg.Add(1)
+		go func(name string, mount *Mount) {
+			defer wg.Done()
+			if err := mount.Stop(); err != nil {
+				m.logger.Error().Err(err).Msgf("Failed to unmount rclone filesystem for debrid: %s", name)
+			} else {
+				m.logger.Info().Msgf("Successfully unmounted rclone filesystem for debrid: %s", name)
+			}
+		}(name, mount)
+	}
+	wg.Wait()
 
 	if m.cmd != nil && m.cmd.Process != nil {
 		// Try graceful shutdown first
@@ -261,14 +265,14 @@ func (m *Manager) Stop(ctx context.Context) error {
 		// Still wait for the Wait() to complete to clean up the process
 		select {
 		case <-done:
-			m.logger.Info().Msg("Rclone process cleanup completed")
+			m.logger.Info().Msg("Client process cleanup completed")
 		case <-time.After(5 * time.Second):
 			m.logger.Error().Msg("Process cleanup timeout")
 		}
 	}
 
 	m.serverStarted = false
-	m.logger.Info().Msg("Rclone RC server stopped")
+	m.logger.Info().Msg("Client RC server stopped")
 	return nil
 }
 
@@ -298,22 +302,15 @@ func (m *Manager) waitForServer() {
 			return
 		}
 
-		if pingServer() {
-			m.logger.Info().Msg("Rclone RC server is ready")
+		if err := m.client.Ping(); err == nil {
+			m.logger.Error().Err(err).Msg("Rclone RC server not responding, retrying...")
 			return
 		}
 
 		time.Sleep(time.Second)
 	}
 
-	m.logger.Error().Msg("Rclone RC server not responding - mount operations will be disabled")
-}
-
-// pingServer checks if the RC server is responding
-func pingServer() bool {
-	req := RCRequest{Command: "core/version"}
-	_, err := makeRequest(req, true)
-	return err == nil
+	m.logger.Error().Msg("Client RC server not responding - mount operations will be disabled")
 }
 
 // waitForReady waits for the RC server to be ready

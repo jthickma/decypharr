@@ -1,7 +1,6 @@
 package repair
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 
@@ -31,42 +30,6 @@ func getSymlinkTarget(file string) string {
 		return target
 	}
 	return ""
-}
-
-func fileIsReadable(filePath string) error {
-	// First check if file exists and is accessible
-	info, err := os.Stat(filePath)
-	if err != nil {
-		return err
-	}
-
-	// Check if it's a regular file
-	if !info.Mode().IsRegular() {
-		return fmt.Errorf("not a regular file")
-	}
-
-	// Try to read the first 1024 bytes
-	err = checkFileStart(filePath)
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func checkFileStart(filePath string) error {
-	f, err := os.Open(filePath)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	// Read first 1kb
-	buffer := make([]byte, 1024)
-	_, err = f.Read(buffer)
-	if err != nil {
-		return err
-	}
-	return nil
 }
 
 func collectFiles(media arr.Content) map[string][]arr.ContentFile {

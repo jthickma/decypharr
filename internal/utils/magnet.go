@@ -3,6 +3,7 @@ package utils
 import (
 	"bufio"
 	"bytes"
+	"crypto/rand"
 	"encoding/base32"
 	"encoding/hex"
 	"fmt"
@@ -224,4 +225,14 @@ func ConstructMagnet(infoHash, name string) *Magnet {
 		Size:     0,
 		Link:     magnetUri,
 	}
+}
+
+func GenerateInfoHash() string {
+	// Generate a random 40-character hexadecimal string (20 bytes = 40 hex chars)
+	b := make([]byte, 20)
+	_, err := io.ReadFull(rand.Reader, b)
+	if err != nil {
+		return ""
+	}
+	return hex.EncodeToString(b)
 }

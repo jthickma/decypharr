@@ -2,8 +2,13 @@ package webdav
 
 import (
 	"fmt"
+	"path"
 	"strconv"
 	"strings"
+	"time"
+
+	"github.com/sirrobot01/decypharr/pkg/manager"
+	"github.com/stanNthe5/stringbuf"
 )
 
 var pctHex = "0123456789ABCDEF"
@@ -140,4 +145,103 @@ func xmlEscape(s string) string {
 		}
 	}
 	return b.String()
+}
+
+func getContentType(fileName string) string {
+	contentType := "application/octet-stream"
+
+	// Determine content type based on file extension
+	switch {
+	case strings.HasSuffix(fileName, ".mp4"):
+		contentType = "video/mp4"
+	case strings.HasSuffix(fileName, ".mkv"):
+		contentType = "video/x-matroska"
+	case strings.HasSuffix(fileName, ".avi"):
+		contentType = "video/x-msvideo"
+	case strings.HasSuffix(fileName, ".mov"):
+		contentType = "video/quicktime"
+	case strings.HasSuffix(fileName, ".m4v"):
+		contentType = "video/x-m4v"
+	case strings.HasSuffix(fileName, ".ts"):
+		contentType = "video/mp2t"
+	case strings.HasSuffix(fileName, ".srt"):
+		contentType = "application/x-subrip"
+	case strings.HasSuffix(fileName, ".vtt"):
+		contentType = "text/vtt"
+	}
+	return contentType
+}
+
+func convertToXML(cleanPath string, currentInfo *manager.FileInfo, children []manager.FileInfo) stringbuf.StringBuf {
+	entries := make([]entry, 0, len(children)+1)
+	// AddOrUpdate the current file itself
+	if currentInfo != nil {
+		entries = append(entries, entry{
+			escHref: xmlEscape(fastEscapePath(cleanPath)),
+			escName: xmlEscape(currentInfo.Name()),
+			isDir:   currentInfo.IsDir(),
+			size:    currentInfo.Size(),
+			modTime: currentInfo.ModTime().Format(time.RFC3339),
+		})
+	}
+
+	for _, info := range children {
+
+		nm := info.Name()
+		// build raw href
+		href := path.Join("/", cleanPath, nm)
+		if info.IsDir() {
+			href += "/"
+		}
+
+		entries = append(entries, entry{
+			escHref: xmlEscape(fastEscapePath(href)),
+			escName: xmlEscape(nm),
+			isDir:   info.IsDir(),
+			size:    info.Size(),
+			modTime: info.ModTime().Format(time.RFC3339),
+		})
+	}
+
+	sb := stringbuf.New("")
+
+	// XML header and main element
+	_, _ = sb.WriteString(`<?xml version="1.0" encoding="UTF-8"?>`)
+	_, _ = sb.WriteString(`<d:multistatus xmlns:d="DAV:">`)
+
+	// AddOrUpdate responses for each entry
+	for _, e := range entries {
+		_, _ = sb.WriteString(`<d:response>`)
+		_, _ = sb.WriteString(`<d:href>`)
+		_, _ = sb.WriteString(e.escHref)
+		_, _ = sb.WriteString(`</d:href>`)
+		_, _ = sb.WriteString(`<d:propstat>`)
+		_, _ = sb.WriteString(`<d:prop>`)
+
+		if e.isDir {
+			_, _ = sb.WriteString(`<d:resourcetype><d:collection/></d:resourcetype>`)
+		} else {
+			_, _ = sb.WriteString(`<d:resourcetype/>`)
+			_, _ = sb.WriteString(`<d:getcontentlength>`)
+			_, _ = sb.WriteString(strconv.FormatInt(e.size, 10))
+			_, _ = sb.WriteString(`</d:getcontentlength>`)
+		}
+
+		_, _ = sb.WriteString(`<d:getlastmodified>`)
+		_, _ = sb.WriteString(e.modTime)
+		_, _ = sb.WriteString(`</d:getlastmodified>`)
+
+		_, _ = sb.WriteString(`<d:displayname>`)
+		_, _ = sb.WriteString(e.escName)
+		_, _ = sb.WriteString(`</d:displayname>`)
+
+		_, _ = sb.WriteString(`</d:prop>`)
+		_, _ = sb.WriteString(`<d:status>HTTP/1.1 200 OK</d:status>`)
+		_, _ = sb.WriteString(`</d:propstat>`)
+		_, _ = sb.WriteString(`</d:response>`)
+	}
+
+	// Close root element
+	_, _ = sb.WriteString(`</d:multistatus>`)
+	return sb
 }

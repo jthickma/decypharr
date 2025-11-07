@@ -3,7 +3,7 @@ package manager
 import (
 	"os"
 	"regexp"
-	"sync"
+	"strings"
 	"time"
 
 	"github.com/sirrobot01/decypharr/internal/config"
@@ -41,11 +41,6 @@ type directoryFilter struct {
 	regex         *regexp.Regexp // only for regex/not_regex
 	sizeThreshold int64          // only for size_gt/size_lt
 	ageThreshold  time.Duration  // only for last_added
-}
-
-type folders struct {
-	sync.RWMutex
-	listing map[string][]os.FileInfo // folder name to file listing
 }
 
 func (m *Manager) initCustomFolders() {
@@ -99,6 +94,10 @@ func (cf *CustomFolders) checkSingleFilter(filter directoryFilter, fileInfo os.F
 	size := fileInfo.Size()
 
 	switch filter.filterType {
+	case filterByInclude:
+		return strings.Contains(name, filter.value)
+	case filterByExclude:
+		return !strings.Contains(name, filter.value)
 	case filterByStartsWith:
 		return regexp.MustCompile("^" + regexp.QuoteMeta(filter.value)).MatchString(name)
 	case filterByEndsWith:

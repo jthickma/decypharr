@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/puzpuzpuz/xsync/v4"
-	"github.com/sirrobot01/decypharr/pkg/debrid/types"
 	"github.com/sirrobot01/decypharr/pkg/manager"
 	"github.com/sirrobot01/decypharr/pkg/mount/dfs/config"
 )
@@ -74,10 +73,10 @@ type FileAccessInfo struct {
 	NextEpisodePath string // Full path to next episode
 }
 
-// Manager manages sparse files for all remote files
+// Manager manages files for all remote files
 type Manager struct {
 	config      *config.FuseConfig
-	files       *xsync.Map[string, *SparseFile]
+	files       *xsync.Map[string, *File]
 	closeCtx    context.Context
 	closeCancel context.CancelFunc
 
@@ -93,7 +92,7 @@ type Manager struct {
 	lastSizeCheck atomic.Int64 // Unix timestamp
 }
 
-// NewManager creates a sparseFile manager
+// NewManager creates a file manager
 func NewManager(manager *manager.Manager, fuseConfig *config.FuseConfig) *Manager {
 	// Create stats tracker
 	statsTracker := &StatsTracker{}
@@ -102,7 +101,7 @@ func NewManager(manager *manager.Manager, fuseConfig *config.FuseConfig) *Manage
 	m := &Manager{
 		config:            fuseConfig,
 		manager:           manager,
-		files:             xsync.NewMap[string, *SparseFile](),
+		files:             xsync.NewMap[string, *File](),
 		closeCtx:          ctx,
 		closeCancel:       cancel,
 		stats:             statsTracker,
@@ -132,61 +131,21 @@ func (m *Manager) closeIdleFiles() {
 	threshold := time.Now().Add(-m.config.FileIdleTimeout)
 
 	// Iterate through all files and close idle ones
-	m.files.Range(func(key string, sf *SparseFile) bool {
-		sf.mu.RLock()
-		shouldClose := sf.lastAccess.Before(threshold) && sf.file != nil
-		sf.mu.RUnlock()
+	m.files.Range(func(key string, f *File) bool {
+		f.mu.RLock()
+		shouldClose := f.lastAccess.Before(threshold) && f.file != nil
+		f.mu.RUnlock()
 
 		if shouldClose {
-			_ = sf.closeFD()
+			_ = f.closeFD()
 		}
 		return true // Continue iteration
 	})
 }
 
-// GetOrCreateFile gets or creates a sparse file for caching
-func (m *Manager) GetOrCreateFile(torrentName, filename string, size int64) (*SparseFile, error) {
-	key := sanitizeForPath(filepath.Join(torrentName, filename))
-
-	// Try to get existing file
-	if sf, ok := m.files.Load(key); ok {
-		// Verify the sparse file still exists on disk
-		if m.sparseFileExists(sf) {
-			return sf, nil
-		}
-		// File was deleted, remove from cache
-		m.files.Delete(key)
-		m.stats.TrackOpenFiles(-1)
-	}
-
-	// Create new sparse file
-	sf, err := newSparseFile(m.config.CacheDir, torrentName, filename, size, m.config.ChunkSize, m.stats, m.manager)
-	if err != nil {
-		return nil, err
-	}
-
-	// Try to store it, or use existing if someone else created it first
-	actual, loaded := m.files.LoadOrStore(key, sf)
-	if loaded {
-		// Someone else created it first, close ours and use theirs
-		_ = sf.Close()
-		return actual, nil
-	}
-
-	// We created it successfully
-	m.stats.TrackOpenFiles(1)
-	return sf, nil
-}
-
-// sparseFileExists checks if the sparse file exists on disk
-func (m *Manager) sparseFileExists(sf *SparseFile) bool {
-	_, err := os.Stat(sf.path)
-	return err == nil
-}
-
 // CreateReader creates a unified File with download capabilities
-func (m *Manager) CreateReader(torrentName string, torrentFile types.File) (*File, error) {
-	key := sanitizeForPath(filepath.Join(torrentName, torrentFile.Name))
+func (m *Manager) CreateReader(info *manager.FileInfo) (*File, error) {
+	key := sanitizeForPath(filepath.Join(info.Parent(), info.Name()))
 
 	// Check if already exists
 	if f, ok := m.files.Load(key); ok {
@@ -201,7 +160,7 @@ func (m *Manager) CreateReader(torrentName string, torrentFile types.File) (*Fil
 		readAhead = chunkSize * 2 // Minimum 2 chunks ahead for smooth playback
 	}
 
-	f, err := newFile(m.config.CacheDir, torrentName, torrentFile, chunkSize, readAhead, m.stats, m.manager)
+	f, err := newFile(m.config.CacheDir, info, chunkSize, readAhead, m.stats, m.manager)
 	if err != nil {
 		return nil, err
 	}
@@ -219,13 +178,13 @@ func (m *Manager) CreateReader(torrentName string, torrentFile types.File) (*Fil
 	return f, nil
 }
 
-// Close closes all sparse files
+// Close closes all files
 func (m *Manager) Close() error {
 	m.closeCancel()
 
 	// Close all files
-	m.files.Range(func(key string, sf *SparseFile) bool {
-		_ = sf.Close()
+	m.files.Range(func(key string, f *File) bool {
+		_ = f.Close()
 		return true
 	})
 	m.files.Clear()
@@ -233,17 +192,17 @@ func (m *Manager) Close() error {
 }
 
 func (m *Manager) CloseFile(filePath string) error {
-	if sf, ok := m.files.LoadAndDelete(filePath); ok {
+	if f, ok := m.files.LoadAndDelete(filePath); ok {
 		m.stats.TrackOpenFiles(-1)
-		return sf.Close()
+		return f.Close()
 	}
 	return nil
 }
 
 func (m *Manager) RemoveFile(filePath string) error {
-	if sf, ok := m.files.LoadAndDelete(filePath); ok {
+	if f, ok := m.files.LoadAndDelete(filePath); ok {
 		m.stats.TrackOpenFiles(-1)
-		if err := sf.removeFromDisk(); err != nil {
+		if err := f.removeFromDisk(); err != nil {
 			return err
 		}
 	}
@@ -271,31 +230,31 @@ func (m *Manager) syncAllMetadata() {
 	now := time.Now()
 
 	// Iterate through all cached files
-	m.files.Range(func(key string, sf *SparseFile) bool {
+	m.files.Range(func(key string, f *File) bool {
 		// Only sync if dirty AND not recently accessed
 		// If file was accessed in last 10 seconds, skip (likely active playback)
-		sf.mu.RLock()
-		isDirty := sf.dirty
-		recentlyAccessed := now.Sub(sf.lastAccess) < 10*time.Second
-		hasRanges := sf.ranges != nil
-		sf.mu.RUnlock()
+		f.mu.RLock()
+		isDirty := f.dirty
+		recentlyAccessed := now.Sub(f.lastAccess) < 10*time.Second
+		hasRanges := f.ranges != nil
+		f.mu.RUnlock()
 
 		if !isDirty || !hasRanges || recentlyAccessed {
 			return true // Skip files that are clean, empty, or actively playing
 		}
 
 		// Sync in background to avoid blocking
-		go func(sparseFile *SparseFile) {
-			sparseFile.mu.Lock()
-			defer sparseFile.mu.Unlock()
-			if sparseFile.dirty && sparseFile.ranges != nil {
-				metadata, err := sparseFile.getMetadata()
+		go func(file *File) {
+			file.mu.Lock()
+			defer file.mu.Unlock()
+			if file.dirty && file.ranges != nil {
+				metadata, err := file.getMetadata()
 				if err == nil {
-					_ = m.saveMetadata(sparseFile.torrentName, sparseFile.fileName, metadata)
+					_ = m.saveMetadata(file.info.Parent(), file.info.Name(), metadata)
 				}
-				sparseFile.dirty = false
+				file.dirty = false
 			}
-		}(sf)
+		}(f)
 
 		return true // Continue iteration
 	})
@@ -471,10 +430,10 @@ func (m *Manager) removeFile(cacheKey, diskPath string) error {
 	return m.removeFileFromDisk(diskPath)
 }
 
-// removeFileFromDisk removes a sparse file from disk
-func (m *Manager) removeFileFromDisk(sparseFilePath string) error {
-	// Remove sparse file
-	if err := os.Remove(sparseFilePath); err != nil && !os.IsNotExist(err) {
+// removeFileFromDisk removes a cached file from disk
+func (m *Manager) removeFileFromDisk(filePath string) error {
+	// Remove cached file
+	if err := os.Remove(filePath); err != nil && !os.IsNotExist(err) {
 		return err
 	}
 
@@ -516,27 +475,6 @@ func (m *Manager) GetStats() map[string]interface{} {
 	}
 
 	return stats
-}
-
-// prefetchNextEpisode prefetches the beginning of the next episode
-func (m *Manager) prefetchNextEpisode(ctx context.Context, torrentName string, nextEpisode types.File) {
-	// Create a File with download capabilities for next episode
-	f, err := m.CreateReader(torrentName, nextEpisode)
-	if err != nil {
-		return
-	}
-
-	// Prefetch first few chunks (enough for instant start of next episode)
-	numChunksToPrefetch := int64(3) // Prefetch first 3 chunks (24MB with 8MB chunks)
-	totalChunks := (nextEpisode.Size + m.config.ChunkSize - 1) / m.config.ChunkSize
-	if numChunksToPrefetch > totalChunks {
-		numChunksToPrefetch = totalChunks
-	}
-
-	// Download chunks in background
-	for chunkIdx := int64(0); chunkIdx < numChunksToPrefetch; chunkIdx++ {
-		go f.downloadChunkAsync(ctx, chunkIdx)
-	}
 }
 
 // === Utility Functions ===

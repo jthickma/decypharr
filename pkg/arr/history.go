@@ -1,8 +1,6 @@
 package arr
 
 import (
-	"encoding/json"
-	"io"
 	"net/http"
 	gourl "net/url"
 	"strconv"
@@ -60,14 +58,12 @@ func (a *Arr) GetHistory(downloadId, eventType string) *HistorySchema {
 	query.Add("eventType", eventType)
 	query.Add("pageSize", "100")
 	url := "api/v3/history" + "?" + query.Encode()
-	resp, err := a.Request(http.MethodGet, url, nil)
+	var data *HistorySchema
+	resp, err := a.Request(http.MethodGet, url, nil, &data)
 	if err != nil {
 		return nil
 	}
-	defer resp.Body.Close()
-	var data *HistorySchema
-
-	if err = json.NewDecoder(resp.Body).Decode(&data); err != nil {
+	if resp.StatusCode != http.StatusOK {
 		return nil
 	}
 	return data
@@ -82,38 +78,22 @@ func (a *Arr) GetQueue() []QueueSchema {
 
 	for {
 		url := "api/v3/queue" + "?" + query.Encode()
-		resp, err := a.Request(http.MethodGet, url, nil)
+		var data QueueResponseScheme
+		resp, err := a.Request(http.MethodGet, url, nil, &data)
 		if err != nil {
 			break
 		}
-
-		func() {
-			defer func(Body io.ReadCloser) {
-				err := Body.Close()
-				if err != nil {
-					return
-				}
-			}(resp.Body)
-
-			var data QueueResponseScheme
-			if err = json.NewDecoder(resp.Body).Decode(&data); err != nil {
-				return
-			}
-
-			results = append(results, data.Records...)
-
-			if len(results) >= data.TotalRecords {
-				// We've fetched all records
-				err = io.EOF // Signal to exit the loop
-				return
-			}
-
-			query.Set("page", strconv.Itoa(data.Page+1))
-		}()
-
-		if err != nil {
+		if resp.StatusCode != http.StatusOK {
 			break
 		}
+
+		results = append(results, data.Records...)
+
+		if len(results) >= data.TotalRecords {
+			break
+		}
+
+		query.Set("page", strconv.Itoa(data.Page+1))
 	}
 
 	return results
@@ -183,7 +163,7 @@ func (a *Arr) CleanupQueue() error {
 	query.Add("changeCategory", "false")
 	url := "api/v3/queue/bulk" + "?" + query.Encode()
 
-	_, err := a.Request(http.MethodDelete, url, payload)
+	_, err := a.Request(http.MethodDelete, url, payload, nil)
 	if err != nil {
 		return err
 	}

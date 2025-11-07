@@ -153,7 +153,7 @@ func (t *Torrent) ActivatePlacement(debridName string) error {
 	for _, p := range t.Placements {
 		p.IsActive = false
 	}
-	if t.Placements[debridName].Status != debridTypes.TorrentStatusCompleted {
+	if t.Placements[debridName].Status != debridTypes.TorrentStatusDownloaded {
 		return ErrPlacementNotCompleted
 	}
 
@@ -202,7 +202,7 @@ func (t *Torrent) SwitchToNextPlacement() {
 		return
 	}
 	for debridName, placement := range t.Placements {
-		if placement.Status == debridTypes.TorrentStatusCompleted {
+		if placement.Status == debridTypes.TorrentStatusDownloaded {
 			_ = t.ActivatePlacement(debridName)
 		}
 	}
@@ -210,12 +210,12 @@ func (t *Torrent) SwitchToNextPlacement() {
 
 // IsCompleted checks if torrent is fully completed
 func (t *Torrent) IsCompleted() bool {
-	return t.Status == debridTypes.TorrentStatusCompleted && t.Progress >= 1.0 && t.ContentPath != ""
+	return t.Status == debridTypes.TorrentStatusDownloaded && t.Progress >= 1.0 && t.ContentPath != ""
 }
 
 // MarkAsCompleted marks the torrent as completed
 func (t *Torrent) MarkAsCompleted(contentPath string) {
-	t.Status = debridTypes.TorrentStatusCompleted
+	t.Status = debridTypes.TorrentStatusDownloaded
 	t.IsComplete = true
 	t.Progress = 1.0
 	t.ContentPath = contentPath
@@ -233,7 +233,7 @@ func (t *Torrent) GetState() string {
 		state = "pausedDL"
 	case debridTypes.TorrentStatusError:
 		state = "error"
-	case debridTypes.TorrentStatusCompleted:
+	case debridTypes.TorrentStatusDownloaded:
 		state = "pausedUP"
 	}
 	return state
@@ -331,6 +331,8 @@ type CachedTorrent struct {
 func (ct *CachedTorrent) ToManagedTorrent() *Torrent {
 	now := time.Now()
 
+	cfg := config.Get()
+
 	// Parse timestamps
 	var addedOn, createdAt time.Time
 	if ct.AddedOn != "" {
@@ -374,7 +376,7 @@ func (ct *CachedTorrent) ToManagedTorrent() *Torrent {
 		Files:            make(map[string]*File),
 	}
 
-	mt.Folder = GetTorrentFolder(mt)
+	mt.Folder = GetTorrentFolder(cfg.FolderNaming, mt)
 
 	for fname, f := range ct.Files {
 		mt.Files[fname] = &File{
@@ -431,9 +433,8 @@ func (ct *CachedTorrent) ToManagedTorrent() *Torrent {
 }
 
 // GetTorrentFolder returns the folder name for a torrent by debrid ID
-func GetTorrentFolder(torrent *Torrent) string {
-	cfg := config.Get()
-	switch cfg.Manager.FolderNaming {
+func GetTorrentFolder(folderNaming config.WebDavFolderNaming, torrent *Torrent) string {
+	switch folderNaming {
 	case config.WebDavUseFileName:
 		return path.Clean(torrent.Name)
 	case config.WebDavUseOriginalName:

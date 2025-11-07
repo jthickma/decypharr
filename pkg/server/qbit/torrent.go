@@ -22,7 +22,7 @@ func (q *QBit) addMagnet(ctx context.Context, url string, arr *arr.Arr, debrid s
 
 	importReq := manager.NewImportRequest(debrid, q.DownloadFolder, magnet, arr, action, false, "", manager.ImportTypeQBitTorrent, false)
 
-	err = q.manager.AddTorrent(ctx, importReq)
+	err = q.manager.AddNewTorrent(ctx, importReq)
 	if err != nil {
 		return fmt.Errorf("failed to process torrent: %w", err)
 	}
@@ -38,7 +38,7 @@ func (q *QBit) addTorrent(ctx context.Context, fileHeader *multipart.FileHeader,
 		return fmt.Errorf("error reading file: %s \n %w", fileHeader.Filename, err)
 	}
 	importReq := manager.NewImportRequest(debrid, q.DownloadFolder, magnet, arr, action, false, "", manager.ImportTypeQBitTorrent, false)
-	err = q.manager.AddTorrent(ctx, importReq)
+	err = q.manager.AddNewTorrent(ctx, importReq)
 	if err != nil {
 		return fmt.Errorf("failed to process torrent: %w", err)
 	}

@@ -1,22 +1,20 @@
 package debridlink
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
+	"net/http"
+	"strings"
 	"time"
 
+	"github.com/imroc/req/v3"
 	"github.com/rs/zerolog"
 	"github.com/sirrobot01/decypharr/internal/config"
+	"github.com/sirrobot01/decypharr/internal/httpclient"
 	"github.com/sirrobot01/decypharr/internal/logger"
-	"github.com/sirrobot01/decypharr/internal/request"
 	"github.com/sirrobot01/decypharr/internal/utils"
 	"github.com/sirrobot01/decypharr/pkg/debrid/account"
 	"github.com/sirrobot01/decypharr/pkg/debrid/types"
 	"go.uber.org/ratelimit"
-
-	"net/http"
-	"strings"
 )
 
 type DebridLink struct {
@@ -24,7 +22,7 @@ type DebridLink struct {
 	APIKey           string
 	accountsManager  *account.Manager
 	DownloadUncached bool
-	client           *request.Client
+	client           *req.Client
 
 	autoExpiresLinksAfter time.Duration
 	logger                zerolog.Logger
@@ -34,17 +32,24 @@ type DebridLink struct {
 }
 
 func New(dc config.Debrid, ratelimits map[string]ratelimit.Limiter) (*DebridLink, error) {
+	cfg := config.Get()
 	headers := map[string]string{
 		"Authorization": fmt.Sprintf("Bearer %s", dc.APIKey),
 		"Content-Type":  "application/json",
 	}
 	_log := logger.New(dc.Name)
-	client := request.New(
-		request.WithHeaders(headers),
-		request.WithLogger(_log),
-		request.WithRateLimiter(ratelimits["main"]),
-		request.WithProxy(dc.Proxy),
-	)
+
+	clientConfig := &httpclient.Config{
+		BaseURL:    "https://debrid-link.com/api/v2",
+		Headers:    headers,
+		RateLimit:  ratelimits["main"],
+		Proxy:      dc.Proxy,
+		MaxRetries: cfg.Retries,
+		RetryableStatus: map[int]struct{}{
+			http.StatusTooManyRequests: {},
+			http.StatusBadGateway:      {},
+		},
+	}
 
 	autoExpiresLinksAfter, err := time.ParseDuration(dc.AutoExpireLinksAfter)
 	if autoExpiresLinksAfter == 0 || err != nil {
@@ -56,8 +61,8 @@ func New(dc config.Debrid, ratelimits map[string]ratelimit.Limiter) (*DebridLink
 		accountsManager:       account.NewManager(dc, ratelimits["download"], _log),
 		DownloadUncached:      dc.DownloadUncached,
 		autoExpiresLinksAfter: autoExpiresLinksAfter,
-		client:                client,
-		logger:                logger.New(dc.Name),
+		client:                httpclient.New(clientConfig),
+		logger:                _log,
 		config:                dc,
 	}, nil
 }
@@ -95,16 +100,15 @@ func (dl *DebridLink) IsAvailable(hashes []string) map[string]bool {
 		}
 
 		hashStr := strings.Join(validHashes, ",")
-		url := fmt.Sprintf("%s/seedbox/cached/%s", dl.Host, hashStr)
-		req, _ := http.NewRequest(http.MethodGet, url, nil)
-		resp, err := dl.client.MakeRequest(req)
-		if err != nil {
-			return result
-		}
+		url := fmt.Sprintf("/seedbox/cached/%s", hashStr)
 		var data AvailableResponse
-		err = json.Unmarshal(resp, &data)
-		if err != nil {
-			return result
+
+		resp, err := dl.client.R().
+			SetSuccessResult(&data).
+			Get(url)
+
+		if err != nil || !resp.IsSuccessState() {
+			continue
 		}
 		if data.Value == nil {
 			return result
@@ -121,16 +125,19 @@ func (dl *DebridLink) IsAvailable(hashes []string) map[string]bool {
 }
 
 func (dl *DebridLink) GetTorrent(torrentId string) (*types.Torrent, error) {
-	url := fmt.Sprintf("%s/seedbox/%s", dl.Host, torrentId)
-	req, _ := http.NewRequest(http.MethodGet, url, nil)
-	resp, err := dl.client.MakeRequest(req)
+	url := fmt.Sprintf("/seedbox/%s", torrentId)
+	var res torrentInfo
+
+	resp, err := dl.client.R().
+		SetSuccessResult(&res).
+		Get(url)
+
 	if err != nil {
 		return nil, err
 	}
-	var res torrentInfo
-	err = json.Unmarshal(resp, &res)
-	if err != nil {
-		return nil, err
+
+	if !resp.IsSuccessState() {
+		return nil, fmt.Errorf("debridlink API error: Status: %d", resp.StatusCode)
 	}
 	if !res.Success || res.Value == nil {
 		return nil, fmt.Errorf("error getting torrent")
@@ -172,16 +179,20 @@ func (dl *DebridLink) GetTorrent(torrentId string) (*types.Torrent, error) {
 }
 
 func (dl *DebridLink) UpdateTorrent(t *types.Torrent) error {
-	url := fmt.Sprintf("%s/seedbox/list?ids=%s", dl.Host, t.Id)
-	req, _ := http.NewRequest(http.MethodGet, url, nil)
-	resp, err := dl.client.MakeRequest(req)
+	url := "/seedbox/list"
+	var res torrentInfo
+
+	resp, err := dl.client.R().
+		SetQueryParam("ids", t.Id).
+		SetSuccessResult(&res).
+		Get(url)
+
 	if err != nil {
 		return err
 	}
-	var res torrentInfo
-	err = json.Unmarshal(resp, &res)
-	if err != nil {
-		return err
+
+	if !resp.IsSuccessState() {
+		return fmt.Errorf("debridlink API error: Status: %d", resp.StatusCode)
 	}
 	if !res.Success {
 		return fmt.Errorf("error getting torrent")
@@ -197,13 +208,12 @@ func (dl *DebridLink) UpdateTorrent(t *types.Torrent) error {
 	data := dt[0]
 	status := types.TorrentStatusDownloading
 	if data.Status == 100 {
-		status = types.TorrentStatusCompleted
+		status = types.TorrentStatusDownloaded
 	}
 	name := utils.RemoveInvalidChars(data.Name)
 	t.Id = data.ID
 	t.Name = name
 	t.Bytes = data.TotalSize
-	t.Folder = name
 	t.Progress = data.DownloadPercent
 	t.Status = status
 	t.Speed = data.DownloadSpeed
@@ -242,18 +252,21 @@ func (dl *DebridLink) UpdateTorrent(t *types.Torrent) error {
 }
 
 func (dl *DebridLink) SubmitMagnet(t *types.Torrent) (*types.Torrent, error) {
-	url := fmt.Sprintf("%s/seedbox/add", dl.Host)
+	url := "/seedbox/add"
 	payload := map[string]string{"url": t.Magnet.Link}
-	jsonPayload, _ := json.Marshal(payload)
-	req, _ := http.NewRequest(http.MethodPost, url, bytes.NewBuffer(jsonPayload))
-	resp, err := dl.client.MakeRequest(req)
+	var res SubmitTorrentInfo
+
+	resp, err := dl.client.R().
+		SetBodyJsonMarshal(payload).
+		SetSuccessResult(&res).
+		Post(url)
+
 	if err != nil {
 		return nil, err
 	}
-	var res SubmitTorrentInfo
-	err = json.Unmarshal(resp, &res)
-	if err != nil {
-		return nil, err
+
+	if !resp.IsSuccessState() {
+		return nil, fmt.Errorf("debridlink API error: Status: %d", resp.StatusCode)
 	}
 	if !res.Success || res.Value == nil {
 		return nil, fmt.Errorf("error adding torrent")
@@ -263,7 +276,6 @@ func (dl *DebridLink) SubmitMagnet(t *types.Torrent) (*types.Torrent, error) {
 	t.Id = data.ID
 	t.Name = name
 	t.Bytes = data.TotalSize
-	t.Folder = name
 	t.Progress = data.DownloadPercent
 	t.Status = types.TorrentStatusDownloading
 	t.Speed = data.DownloadSpeed
@@ -305,10 +317,10 @@ func (dl *DebridLink) CheckStatus(torrent *types.Torrent) (*types.Torrent, error
 		if err != nil || torrent == nil {
 			return torrent, err
 		}
-		if torrent.Status == types.TorrentStatusCompleted {
+		if torrent.Status == types.TorrentStatusDownloaded {
 			dl.logger.Info().Msgf("Torrent: %s downloaded", torrent.Name)
 			return torrent, nil
-		} else if utils.Contains(dl.GetDownloadingStatus(), string(torrent.Status)) {
+		} else if torrent.Status == types.TorrentStatusDownloading {
 			if !torrent.DownloadUncached {
 				return torrent, fmt.Errorf("torrent: %s not cached", torrent.Name)
 			}
@@ -323,11 +335,17 @@ func (dl *DebridLink) CheckStatus(torrent *types.Torrent) (*types.Torrent, error
 }
 
 func (dl *DebridLink) DeleteTorrent(torrentId string) error {
-	url := fmt.Sprintf("%s/seedbox/%s/remove", dl.Host, torrentId)
-	req, _ := http.NewRequest(http.MethodDelete, url, nil)
-	if _, err := dl.client.MakeRequest(req); err != nil {
+	url := fmt.Sprintf("/seedbox/%s/remove", torrentId)
+
+	resp, err := dl.client.R().Delete(url)
+	if err != nil {
 		return err
 	}
+
+	if !resp.IsSuccessState() {
+		return fmt.Errorf("debridlink API error: Status: %d", resp.StatusCode)
+	}
+
 	dl.logger.Info().Msgf("Torrent: %s deleted from DebridLink", torrentId)
 	return nil
 }
@@ -343,10 +361,6 @@ func (dl *DebridLink) RefreshDownloadLinks() error {
 
 func (dl *DebridLink) GetDownloadLink(t *types.Torrent, file *types.File) (types.DownloadLink, error) {
 	return dl.accountsManager.GetDownloadLink(file.Link)
-}
-
-func (dl *DebridLink) GetDownloadingStatus() []string {
-	return []string{"downloading"}
 }
 
 func (dl *DebridLink) GetDownloadUncached() bool {
@@ -372,17 +386,22 @@ func (dl *DebridLink) GetTorrents() ([]*types.Torrent, error) {
 }
 
 func (dl *DebridLink) getTorrents(page, perPage int) ([]*types.Torrent, error) {
-	url := fmt.Sprintf("%s/seedbox/list?page=%d&perPage=%d", dl.Host, page, perPage)
-	req, _ := http.NewRequest(http.MethodGet, url, nil)
-	resp, err := dl.client.MakeRequest(req)
+	url := "/seedbox/list"
 	torrents := make([]*types.Torrent, 0)
+	var res torrentInfo
+
+	resp, err := dl.client.R().
+		SetQueryParam("page", fmt.Sprintf("%d", page)).
+		SetQueryParam("perPage", fmt.Sprintf("%d", perPage)).
+		SetSuccessResult(&res).
+		Get(url)
+
 	if err != nil {
 		return torrents, err
 	}
-	var res torrentInfo
-	err = json.Unmarshal(resp, &res)
-	if err != nil {
-		return torrents, err
+
+	if !resp.IsSuccessState() {
+		return torrents, fmt.Errorf("debridlink API error: Status: %d", resp.StatusCode)
 	}
 
 	data := *res.Value
@@ -451,19 +470,19 @@ func (dl *DebridLink) GetProfile() (*types.Profile, error) {
 	if dl.Profile != nil {
 		return dl.Profile, nil
 	}
-	url := fmt.Sprintf("%s/account/infos", dl.Host)
-	req, err := http.NewRequest(http.MethodGet, url, nil)
-	if err != nil {
-		return nil, err
-	}
-	resp, err := dl.client.MakeRequest(req)
-	if err != nil {
-		return nil, err
-	}
+	url := "/account/infos"
 	var res UserInfo
-	err = json.Unmarshal(resp, &res)
+
+	resp, err := dl.client.R().
+		SetSuccessResult(&res).
+		Get(url)
+
 	if err != nil {
 		return nil, err
+	}
+
+	if !resp.IsSuccessState() {
+		return nil, fmt.Errorf("debridlink API error: Status: %d", resp.StatusCode)
 	}
 	if !res.Success || res.Value == nil {
 		return nil, fmt.Errorf("error getting user info")
