@@ -105,7 +105,9 @@ func newFile(cacheDir string, info *manager.FileInfo, chunkSize, readAhead int64
 	bufferCtx := context.Background()
 	memBufferSize := vfsManager.config.BufferSize
 	if memBufferSize <= 0 {
-		memBufferSize = 64 * 1024 * 1024 // Default 64MB if not configured
+		// OPTIMIZED: Reduced from 64MB to 16MB to prevent memory explosion
+		// 16MB is still enough for smooth playback (holds ~2 chunks of 8MB)
+		memBufferSize = 16 * 1024 * 1024 // Default 16MB if not configured
 	}
 	memBuffer := NewMemoryBuffer(bufferCtx, memBufferSize, chunkSize)
 	memBuffer.AttachFile(file) // Attach for async flushing
@@ -612,17 +614,22 @@ func (f *File) ReadAt(ctx context.Context, p []byte, offset int64) (int, error) 
 }
 
 // aggressiveSequentialPrefetch downloads chunks ahead for smooth playback
+// OPTIMIZED: Reduced from 6 chunks to 2-3 chunks to prevent memory explosion
 func (f *File) aggressiveSequentialPrefetch(ctx context.Context, currentOffset int64) {
 	if f.closed.Load() {
 		return
 	}
 
-	// Download 4-6 chunks ahead for smooth playback
-	numChunks := int64(6)
+	// Download 2-3 chunks ahead (reduced from 6 to save memory)
+	// With 8MB chunks: 2-3 chunks = 16-24MB (vs 48MB before)
+	numChunks := int64(2)
 	if f.readAhead > 0 {
 		numChunks = (f.readAhead + f.chunkSize - 1) / f.chunkSize
-		if numChunks < 4 {
-			numChunks = 4 // Minimum 4 chunks for smooth playback
+		if numChunks < 2 {
+			numChunks = 2 // Minimum 2 chunks for smooth playback
+		}
+		if numChunks > 3 {
+			numChunks = 3 // Maximum 3 chunks to prevent memory usage
 		}
 	}
 
@@ -633,7 +640,7 @@ func (f *File) aggressiveSequentialPrefetch(ctx context.Context, currentOffset i
 		endChunk = totalChunks
 	}
 
-	// Download chunks concurrently
+	// Download chunks concurrently (but only 2-3 instead of 6)
 	for chunkIdx := startChunk; chunkIdx < endChunk; chunkIdx++ {
 		select {
 		case <-f.closeChan:

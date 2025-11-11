@@ -48,26 +48,29 @@ func (m *Manager) AddNewTorrent(ctx context.Context, importReq *ImportRequest) e
 		return fmt.Errorf("failed to save torrent: %w", err)
 	}
 
-	var debridTorrent *debridTypes.Torrent
+	var (
+		debridTorrent *debridTypes.Torrent
+		err           error
+	)
 
 	// Check if already exists in storage/It's already download
-	existing, err := m.storage.Get(torrent.InfoHash)
-	if err == nil && existing != nil && existing.IsValid() {
-		m.logger.Info().
-			Str("name", torrent.Name).
-			Str("info_hash", torrent.InfoHash).
-			Msg("Torrent already exists in storage, skipping submitting to debrid")
-		placement := existing.GetActivePlacement(torrent.InfoHash)
-		if placement != nil {
-			client := m.DebridClient(placement.Debrid)
-			if client != nil {
-				debridTorrent, err = client.GetTorrent(placement.ID)
-				if err != nil {
-					debridTorrent = nil
-				}
-			}
-		}
-	}
+	//existing, err := m.storage.Get(torrent.InfoHash)
+	//if err == nil && existing != nil && existing.IsValid() {
+	//	m.logger.Info().
+	//		Str("name", torrent.Name).
+	//		Str("info_hash", torrent.InfoHash).
+	//		Msg("Torrent already exists in storage, skipping submitting to debrid")
+	//	placement := existing.GetActivePlacement(torrent.InfoHash)
+	//	if placement != nil {
+	//		client := m.DebridClient(placement.Debrid)
+	//		if client != nil {
+	//			debridTorrent, err = client.GetTorrent(placement.ID)
+	//			if err != nil {
+	//				debridTorrent = nil
+	//			}
+	//		}
+	//	}
+	//}
 
 	if debridTorrent == nil {
 		// Submit to debrid using integrated method
@@ -86,10 +89,9 @@ func (m *Manager) AddNewTorrent(ctx context.Context, importReq *ImportRequest) e
 				return nil
 			}
 
-			m.logger.Error().Err(err).Str("name", torrent.Name).Msg("Failed to submit torrent to debrid")
 			torrent.MarkAsError(err)
 			_ = m.queue.Update(torrent)
-			return nil
+			return fmt.Errorf("failed to submit torrent to debrid: %w", err)
 		}
 	}
 

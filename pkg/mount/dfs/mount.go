@@ -201,19 +201,42 @@ func (m *Mount) Stop() error {
 	return nil
 }
 
-func (m *Mount) Stats() map[string]interface{} {
-	var mountStats map[string]interface{}
-	if m.vfs != nil {
-		vfsStats := m.vfs.GetStats()
-		mountStats = map[string]interface{}{
-			"name":       m.name,
-			"type":       m.Type(),
-			"mounted":    true,
-			"mount_path": m.config.MountPath,
-			"stats":      vfsStats,
+// Stats returns structured statistics for this mount
+func (m *Mount) Stats() *MountStats {
+	if m.vfs == nil {
+		return nil
+	}
+
+	vfsStats := m.vfs.GetStats()
+
+	stats := &MountStats{
+		Name:          m.name,
+		Type:          m.Type(),
+		Mounted:       true,
+		MountPath:     m.config.MountPath,
+		CacheDirSize:  vfsStats["cache_dir_size"].(int64),
+		CacheDirLimit: vfsStats["cache_dir_limit"].(int64),
+		ActiveReads:   vfsStats["active_reads"].(int64),
+		OpenedFiles:   vfsStats["opened_files"].(int64),
+	}
+
+	// Extract memory buffer stats if present
+	if memBuffer, ok := vfsStats["memory_buffer"].(map[string]interface{}); ok {
+		stats.MemoryBuffer = &MemoryBufferStats{
+			Hits:        memBuffer["hits"].(int64),
+			Misses:      memBuffer["misses"].(int64),
+			HitRatePct:  memBuffer["hit_rate_pct"].(float64),
+			Evictions:   memBuffer["evictions"].(int64),
+			Flushes:     memBuffer["flushes"].(int64),
+			FlushBytes:  memBuffer["flush_bytes"].(int64),
+			MemoryUsed:  memBuffer["memory_used"].(int64),
+			MemoryLimit: memBuffer["memory_limit"].(int64),
+			ChunksCount: memBuffer["chunks_count"].(int64),
+			FilesCount:  memBuffer["files_count"].(int),
 		}
 	}
-	return mountStats
+
+	return stats
 }
 
 func (m *Mount) Type() string {

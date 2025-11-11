@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	debridTypes "github.com/sirrobot01/decypharr/pkg/debrid/types"
 	"github.com/sirrobot01/decypharr/pkg/storage"
 )
 
@@ -59,10 +58,6 @@ func (m *Manager) executeMigration(ctx context.Context, job *storage.SwitcherJob
 		Str("source", job.SourceDebrid).
 		Str("target", job.TargetDebrid).
 		Msg("Starting torrent migration")
-
-	// Update torrent status
-	torrent.Status = debridTypes.TorrentStatusDownloading
-	_ = m.AddOrUpdate(torrent, nil)
 
 	// Get target debrid client
 	targetClient := m.DebridClient(job.TargetDebrid)

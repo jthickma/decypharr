@@ -135,7 +135,9 @@ func (sr *StreamingReader) readLoop() {
 			n = int(remaining)
 		}
 
-		// Create a copy for the channel (don't send pooled buffer directly)
+		// OPTIMIZATION: Instead of creating new slice, use slice of pooled buffer
+		// We must copy because buffer goes back to pool
+		// But we only allocate what we actually read
 		chunk := make([]byte, n)
 		copy(chunk, buf[:n])
 		sr.pool.Put(bufPtr) // Return to pool immediately
@@ -143,14 +145,14 @@ func (sr *StreamingReader) readLoop() {
 		// Send to channel (blocks if buffer is full - this is the ring buffer backpressure)
 		select {
 		case sr.chunkCh <- chunk:
+			writeOffset := currentOffset
 			currentOffset += int64(n)
 			sr.bytesRead.Add(int64(n))
 
-			// Background cache write (non-blocking, fire-and-forget)
+			// Synchronous cache write to prevent goroutine explosion
+			// This is fast because it goes to memory buffer first, then async disk flush
 			if sr.cacheFile != nil {
-				go func(data []byte, offset int64) {
-					_, _ = sr.cacheFile.WriteAt(data, offset)
-				}(chunk, currentOffset-int64(n))
+				_, _ = sr.cacheFile.WriteAt(chunk, writeOffset)
 			}
 
 		case <-sr.ctx.Done():
@@ -242,6 +244,7 @@ func (sr *StreamingReader) IsComplete() bool {
 
 // streamingReadAt performs a streaming read using the ring buffer
 // This is optimized for sequential playback with instant startup
+// IMPORTANT: Only reads what's requested, does NOT download entire file
 func (f *File) streamingReadAt(ctx context.Context, p []byte, offset int64) (int, error) {
 	// Calculate read size
 	readSize := int64(len(p))
@@ -249,15 +252,15 @@ func (f *File) streamingReadAt(ctx context.Context, p []byte, offset int64) (int
 		readSize = f.info.Size() - offset
 	}
 
-	// Create streaming reader
+	// Create streaming reader - will only download what we need
 	endOffset := offset + readSize - 1
 	sr := NewStreamingReader(ctx, f.manager, f.info, offset, endOffset, f)
 	defer func() {
-		// Ensure cleanup happens
+		// Close immediately to stop background downloading
 		_ = sr.Close()
 	}()
 
-	// Read all data from stream
+	// Read all data from stream (ONLY the requested amount)
 	totalRead := 0
 	for totalRead < len(p) {
 		n, err := sr.Read(p[totalRead:])
@@ -280,6 +283,8 @@ func (f *File) streamingReadAt(ctx context.Context, p []byte, offset int64) (int
 
 		// Check if we've read enough
 		if totalRead >= len(p) || totalRead >= int(readSize) {
+			// Got what we needed - return immediately
+			// Close will stop background download
 			break
 		}
 

@@ -30,6 +30,19 @@ func (st *StatsTracker) TrackOpenFiles(delta int64) {
 	st.openedFiles.Add(delta)
 }
 
+// BuildCacheKey returns the canonical cache key used for tracking files in the VFS manager.
+// The key mirrors the on-disk layout (sanitized parent directory + sanitized filename).
+func BuildCacheKey(parent, name string) string {
+	sanitizedParent := sanitizeForPath(parent)
+	sanitizedName := sanitizeForPath(name)
+
+	if sanitizedParent == "" {
+		return sanitizedName
+	}
+
+	return filepath.Join(sanitizedParent, sanitizedName)
+}
+
 // CacheType represents the type of caching to perform
 type CacheType int
 
@@ -465,9 +478,6 @@ func (m *Manager) GetStats() map[string]interface{} {
 		"cache_dir_limit": m.config.CacheDiskSize,
 		"active_reads":    m.stats.activeReads.Load(),
 		"opened_files":    m.stats.openedFiles.Load(),
-		"chunk_size":      m.config.ChunkSize,
-		"read_ahead_size": m.config.ReadAheadSize,
-		"buffer_size":     m.config.BufferSize,
 	}
 
 	// Aggregate memory buffer stats from all files

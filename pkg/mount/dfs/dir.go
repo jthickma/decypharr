@@ -208,7 +208,6 @@ func (d *Dir) Unlink(ctx context.Context, name string) syscall.Errno {
 			d.logger.Error().Err(err).Str("file", fileNode.info.Name()).Msg("Failed to remove file from source")
 			return syscall.EIO
 		}
-
 		// Close the file from range_manager
 		cacheKey := vfs.BuildCacheKey(fileNode.info.Parent(), fileNode.info.Name())
 		_ = d.vfs.CloseFile(cacheKey)

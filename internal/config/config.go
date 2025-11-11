@@ -803,10 +803,12 @@ func (c *Config) setDefaults() {
 		firstDebrid = c.Debrids[0]
 	}
 
-	if c.Rclone.Enabled {
-		c.Mount.Type = MountTypeRclone
-		c.Mount.MountPath = c.Rclone.MountPath
-		c.Mount.Rclone = c.Rclone
+	if c.Mount.Type == "" {
+		if c.Rclone.Enabled {
+			c.Mount.Type = MountTypeRclone
+			c.Mount.MountPath = c.Rclone.MountPath
+			c.Mount.Rclone = c.Rclone
+		}
 	}
 
 	if c.Mount.MountPath == "" {
