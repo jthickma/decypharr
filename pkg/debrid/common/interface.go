@@ -10,7 +10,6 @@ import (
 type Client interface {
 	SubmitMagnet(tr *types.Torrent) (*types.Torrent, error)
 	CheckStatus(tr *types.Torrent) (*types.Torrent, error)
-	GetFileDownloadLinks(tr *types.Torrent) (map[string]types.DownloadLink, error)
 	GetDownloadLink(torrentID string, file *types.File) (types.DownloadLink, error)
 	DeleteTorrent(torrentId string) error
 	IsAvailable(infohashes []string) map[string]bool

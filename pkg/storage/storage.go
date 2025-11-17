@@ -45,7 +45,7 @@ func NewStorage(dbPath string) (*Storage, error) {
 
 	// Open bbolt database with optimized settings
 	db, err := bolt.Open(dbPath, 0600, &bolt.Options{
-		Timeout:      1 * time.Second,
+		Timeout:      10 * time.Second,
 		NoGrowSync:   false,
 		FreelistType: bolt.FreelistArrayType,
 	})

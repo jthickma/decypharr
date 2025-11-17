@@ -31,7 +31,6 @@ var (
 // - Download link caching with error-based invalidation
 // - Link refresh callback on errors
 type Pool struct {
-	// HTTP client with optimized transport
 	client *http.Client
 
 	// Configuration
@@ -142,7 +141,6 @@ func (p *Pool) Get(ctx context.Context, start, end int64) (*http.Response, error
 				}
 				continue
 			}
-
 			return nil, fmt.Errorf("request failed after %d retries: %w", p.maxRetries, lastErr)
 		}
 
@@ -368,6 +366,7 @@ func (p *Pool) getLink() (types.DownloadLink, error) {
 		return types.DownloadLink{}, fmt.Errorf("invalid download link type in pool")
 	}
 	if err := dl.Valid(); err != nil {
+		p.invalidateLink()
 		return types.DownloadLink{}, fmt.Errorf("invalid download link in pool: %w", err)
 	}
 	return dl, nil

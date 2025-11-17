@@ -258,7 +258,7 @@ func (f *Fixer) MoveTorrent(torrent *storage.Torrent, debridName string, reinser
 	}
 
 	// Update torrent with new placement
-	placement = torrent.AddPlacement(newDebridTorrent)
+	_ = torrent.AddPlacement(newDebridTorrent)
 	// Update global files metadata if needed
 	for _, f := range newDebridTorrent.GetFiles() {
 		if _, exists := torrent.Files[f.Name]; !exists {

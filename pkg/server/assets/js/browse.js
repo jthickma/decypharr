@@ -208,8 +208,6 @@ class FileBrowser {
                 apiUrl += `/${encodeURIComponent(pathParts[0])}/${encodeURIComponent(pathParts[1])}`;
             } else if (pathParts.length === 3) {
                 apiUrl += `/${encodeURIComponent(pathParts[0])}/${encodeURIComponent(pathParts[1])}/${encodeURIComponent(pathParts[2])}`;
-            } else if (pathParts.length >= 4) {
-                apiUrl += `/${encodeURIComponent(pathParts[0])}/${encodeURIComponent(pathParts[1])}/${encodeURIComponent(pathParts[2])}/${encodeURIComponent(pathParts[3])}`;
             }
 
             // Add query params
@@ -439,7 +437,7 @@ class FileBrowser {
 
         // Extract torrent and file names from path
         const pathParts = path.split('/').filter(p => p);
-        if (pathParts.length < 4) return;
+        if (pathParts.length < 3) return;
 
         const torrentName = pathParts[pathParts.length - 2];
         const file = pathParts[pathParts.length - 1];

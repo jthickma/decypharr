@@ -85,6 +85,8 @@ func New(dc config.Debrid, ratelimits map[string]ratelimit.Limiter) (*RealDebrid
 		config:                dc,
 	}
 
+	r.accountsManager.SetLinkFetcher(r.fetchDownloadLink)
+
 	go func() {
 		_, err = r.GetProfile()
 		if err != nil {
@@ -601,7 +603,6 @@ func (r *RealDebrid) GetFileDownloadLinks(t *types.Torrent) (map[string]types.Do
 	for _, f := range _files {
 		go func(file types.File) {
 			defer wg.Done()
-
 			link, err := r.GetDownloadLink(t.Id, &file)
 			if err != nil {
 				mu.Lock()
@@ -657,7 +658,7 @@ func (r *RealDebrid) CheckLink(link string) error {
 	return nil
 }
 
-func (r *RealDebrid) getDownloadLink(account *account.Account, file *types.File) (types.DownloadLink, error) {
+func (r *RealDebrid) _getDownloadLink(account *account.Account, file *types.File) (types.DownloadLink, error) {
 	emptyLink := types.DownloadLink{}
 	link := file.Link
 	if strings.HasPrefix(file.Link, "https://real-debrid.com/d/") && len(file.Link) > 39 {
@@ -700,16 +701,13 @@ func (r *RealDebrid) getDownloadLink(account *account.Account, file *types.File)
 		Generated:    now,
 		ExpiresAt:    now.Add(r.autoExpiresLinksAfter),
 	}
-
-	// Store the link in the account
-	account.StoreDownloadLink(dl)
 	return dl, nil
 }
 
-func (r *RealDebrid) GetDownloadLink(id string, file *types.File) (types.DownloadLink, error) {
+func (r *RealDebrid) fetchDownloadLink(id string, file *types.File) (types.DownloadLink, error) {
 	accounts := r.accountsManager.Active()
 	for _, _account := range accounts {
-		downloadLink, err := r.getDownloadLink(_account, file)
+		downloadLink, err := r._getDownloadLink(_account, file)
 		if err == nil {
 			return downloadLink, nil
 		}
@@ -724,7 +722,7 @@ func (r *RealDebrid) GetDownloadLink(id string, file *types.File) (types.Downloa
 		}
 		backOff := 1 * time.Second
 		for retries > 0 {
-			downloadLink, err = r.getDownloadLink(_account, file)
+			downloadLink, err = r._getDownloadLink(_account, file)
 			if err == nil {
 				return downloadLink, nil
 			}
@@ -738,6 +736,10 @@ func (r *RealDebrid) GetDownloadLink(id string, file *types.File) (types.Downloa
 		}
 	}
 	return types.DownloadLink{}, fmt.Errorf("realdebrid API error: used all active accounts")
+}
+
+func (r *RealDebrid) GetDownloadLink(id string, file *types.File) (types.DownloadLink, error) {
+	return r.accountsManager.GetDownloadLink(id, file)
 }
 
 func (r *RealDebrid) getTorrents(offset int, limit int) (int, []*types.Torrent, error) {

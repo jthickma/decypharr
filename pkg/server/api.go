@@ -126,13 +126,22 @@ func (s *Server) handleRepairMedia(w http.ResponseWriter, r *http.Request) {
 
 	var arrs []string
 
-	if req.ArrName != "" {
-		_arr := s.manager.Arr().Get(req.ArrName)
-		if _arr == nil {
-			http.Error(w, "No Arrs found to repair", http.StatusNotFound)
-			return
+	// Check if this is "all" mode or traditional "arr" mode
+	if req.Mode == "all" {
+		// All mode - no arr validation needed
+		// The torrent filter is optional and handled in the repair logic
+		// We pass an empty arrs array to trigger "all" mode
+		arrs = []string{}
+	} else {
+		// Traditional arr mode
+		if req.ArrName != "" {
+			_arr := s.manager.Arr().Get(req.ArrName)
+			if _arr == nil {
+				http.Error(w, "No Arrs found to repair", http.StatusNotFound)
+				return
+			}
+			arrs = append(arrs, req.ArrName)
 		}
-		arrs = append(arrs, req.ArrName)
 	}
 
 	if err := s.repair.AddJob(arrs, req.MediaIds, req.AutoProcess, false); err != nil {
@@ -140,7 +149,10 @@ func (s *Server) handleRepairMedia(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	utils.JSONResponse(w, "Repair completed", http.StatusOK)
+	utils.JSONResponse(w, map[string]string{
+		"message": "Repair job started successfully",
+		"job_id":  "job-started",
+	}, http.StatusOK)
 }
 
 func (s *Server) handleGetVersion(w http.ResponseWriter, r *http.Request) {

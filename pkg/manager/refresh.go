@@ -268,33 +268,6 @@ func (m *Manager) refreshTorrents(ctx context.Context, debridName string, debrid
 	}
 }
 
-func (m *Manager) refreshEntries(ctx context.Context) {
-	// Refresh all torrents to update their entries
-	var wg sync.WaitGroup
-	err := m.storage.ForEachBatch(100, func(batch []*storage.Torrent) error {
-		wg.Add(1)
-		go func(torrents []*storage.Torrent) {
-			defer wg.Done()
-			for _, t := range torrents {
-				select {
-				case <-ctx.Done():
-					return
-				default:
-					// Just refresh torrent entries
-					if err := m.storage.UpdateTorrentEntry(t); err != nil {
-						m.logger.Error().Err(err).Str("infohash", t.InfoHash).Msg("Failed to refresh torrent entry")
-					}
-				}
-			}
-		}(batch)
-		return nil
-	})
-	wg.Wait()
-	if err != nil {
-		m.logger.Error().Err(err).Msg("Failed to refresh entries")
-	}
-}
-
 // processSyncTorrent processes a single torrent and returns it for batched writing
 func (m *Manager) processSyncTorrent(t *types.Torrent) (*storage.Torrent, error) {
 	// GetReader the debrid client
@@ -487,8 +460,6 @@ func (m *Manager) refreshDebridDownloadLinks(ctx context.Context, debridName str
 
 	if err := debridClient.RefreshDownloadLinks(); err != nil {
 		m.logger.Error().Err(err).Str("debrid", debridName).Msg("Failed to refresh download links")
-	} else {
-		m.logger.Debug().Str("debrid", debridName).Msg("Refreshed download links")
 	}
 }
 

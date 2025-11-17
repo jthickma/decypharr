@@ -2,7 +2,7 @@ package dfs
 
 import (
 	"context"
-	"sync"
+	"fmt"
 	"sync/atomic"
 
 	"github.com/rs/zerolog"
@@ -12,10 +12,9 @@ import (
 
 // Manager manages FUSE filesystem instances with proper caching
 type Manager struct {
-	mounts  map[string]*Mount
+	mount   *Mount
 	manager *manager.Manager
 	logger  zerolog.Logger
-	mu      sync.RWMutex
 	ready   atomic.Bool
 }
 
@@ -25,60 +24,44 @@ func NewManager(manager *manager.Manager) *Manager {
 		manager: manager,
 		logger:  logger.New("dfs"),
 	}
-	m.registerMounts()
+	m.registerMount()
 	return m
 }
 
-func (m *Manager) registerMounts() {
-	mounts := make(map[string]*Mount)
-	for mountName := range m.manager.MountPaths() {
-		mnt, err := NewMount(mountName, m.manager)
-		if err != nil {
-			m.logger.Error().Err(err).Msgf("Failed to create FUSE mount for debrid: %s", mountName)
-			continue
-		}
-		mounts[mountName] = mnt
+func (m *Manager) registerMount() {
+	mountInfo := m.manager.FirstMountInfo()
+	if mountInfo == nil {
+		m.logger.Error().Msg("No mount info available to register DFS mount")
+		return
 	}
-	m.mu.Lock()
-	m.mounts = mounts
-	m.mu.Unlock()
+	mnt, err := NewMount(mountInfo.Name(), m.manager)
+	if err != nil {
+		m.logger.Error().Err(err).Msgf("Failed to create DFS mount for: %s", mountInfo.Name())
+		return
+	}
+	m.mount = mnt
 }
 
 // Start starts the FUSE filesystem manager
 func (m *Manager) Start(ctx context.Context) error {
-	var wg sync.WaitGroup
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	for name, mount := range m.mounts {
-		wg.Add(1)
-		go func(name string, mount *Mount) {
-			defer wg.Done()
-			if err := mount.Start(ctx); err != nil {
-				m.logger.Error().Err(err).Msgf("Failed to mount FUSE filesystem for debrid: %s", name)
-			} else {
-				m.logger.Info().Msgf("Successfully mounted FUSE filesystem for debrid: %s", name)
-			}
-		}(name, mount)
+	if m.mount == nil {
+		return fmt.Errorf("mount not initialized")
 	}
-	wg.Wait()
+	if err := m.mount.Start(ctx); err != nil {
+		m.logger.Error().Err(err).Msgf("Failed to mount FUSE filesystem")
+	} else {
+		m.logger.Info().Msgf("Successfully mounted FUSE filesystem for debrid")
+	}
 	m.ready.Store(true)
 	return nil
 }
 
 // Stop stops the  FUSE filesystem manager
 func (m *Manager) Stop() error {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	for name, mount := range m.mounts {
-		if err := mount.Stop(); err != nil {
-			m.logger.Error().Err(err).Msgf("Failed to unmount FUSE filesystem for debrid: %s", name)
-		} else {
-			m.logger.Info().Msgf("Successfully unmounted FUSE filesystem for debrid: %s", name)
-		}
+	if m.mount == nil {
+		return fmt.Errorf("mount not initialized")
 	}
-	return nil
+	return m.mount.Stop()
 }
 
 func (m *Manager) IsReady() bool {
@@ -87,52 +70,16 @@ func (m *Manager) IsReady() bool {
 
 // Stats returns unified statistics across all DFS mounts
 func (m *Manager) Stats() map[string]interface{} {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
 	// Aggregate stats from all mounts
-	aggregated := NewDFSStats()
-	mountsInfo := make(map[string]interface{})
-
-	var firstMountConfigSet bool
-
-	for name, mount := range m.mounts {
-		mountStats := mount.Stats()
-		if mountStats == nil {
-			continue
-		}
-
-		// Store individual mount stats
-		mountsInfo[name] = mountStats.ToMap()
-
-		// Aggregate totals
-		aggregated.CacheDirSize.Add(mountStats.CacheDirSize)
-		aggregated.CacheDirLimit.Add(mountStats.CacheDirLimit)
-		aggregated.ActiveReads.Add(mountStats.ActiveReads)
-		aggregated.OpenedFiles.Add(int64(mountStats.OpenedFiles))
-
-		// GetReader config values from first mount (same across all mounts)
-		if !firstMountConfigSet && mount.rfs != nil {
-			rfsStats := mount.rfs.GetStats()
-			// RFS doesn't expose chunk_size/read_ahead/buffer in stats
-			// Use config values instead
-			if mount.config != nil {
-				aggregated.ChunkSize = mount.config.ChunkSize
-				aggregated.ReadAheadSize = mount.config.ReadAheadSize
-				aggregated.BufferSize = mount.config.BufferSize
-			}
-			_ = rfsStats // Avoid unused variable
-			firstMountConfigSet = true
-		}
-	}
-
-	return map[string]interface{}{
+	stats := map[string]interface{}{
 		"enabled": true,
 		"ready":   m.ready.Load(),
 		"type":    m.Type(),
-		"mounts":  mountsInfo,
-		"stats":   aggregated.ToMap(), // Clean, unified stats
 	}
+	for key, stat := range m.mount.Stats() {
+		stats[key] = stat
+	}
+	return stats
 }
 
 func (m *Manager) Type() string {

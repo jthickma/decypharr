@@ -78,6 +78,13 @@ func (m *Manager) MountPaths() map[string]*FileInfo {
 	return m.mountPaths
 }
 
+func (m *Manager) FirstMountInfo() *FileInfo {
+	if m.firstDebrid == "" {
+		return nil
+	}
+	return m.mountPaths[m.firstDebrid]
+}
+
 func (m *Manager) RootInfo() *FileInfo {
 	if m.rootInfo == nil {
 		m.rootInfo = &FileInfo{
@@ -195,9 +202,8 @@ func (m *Manager) getEntryChildren(group string) (*FileInfo, []FileInfo) {
 		// This returns all torrents - using streaming to avoid loading all into memory
 		var infos []FileInfo
 		err := m.storage.ForEach(func(t *storage.Torrent) error {
-			name := t.GetFolder()
 			infos = append(infos, FileInfo{
-				name:         name,
+				name:         t.GetFolder(),
 				size:         t.Size,
 				modTime:      t.AddedOn,
 				isDir:        true,

@@ -44,12 +44,6 @@ type FuseConfig struct {
 
 	// Health and monitoring
 	StatsInterval time.Duration
-
-	// Memory-only mode (no disk caching)
-	MemoryOnlyMode   bool  // Enable pure memory streaming
-	MemoryLimit      int64 // Per-file memory limit (default: 100MB)
-	MemoryChunkSize  int64 // Memory chunk size (default: 2MB)
-	MemoryBufferSize int64 // Ring buffer size (default: 8MB)
 }
 
 // DefaultFuseConfig returns a streaming-optimized default configuration
@@ -165,38 +159,6 @@ func ParseFuseConfig(mountName string) (*FuseConfig, error) {
 	// Only override if user explicitly set it to non-zero
 	if cfg.MaxConcurrentReads > 0 {
 		fuseConfig.MaxConcurrentReads = cfg.MaxConcurrentReads
-	}
-
-	// Memory-only mode configuration
-	fuseConfig.MemoryOnlyMode = cfg.MemoryOnlyMode
-	if cfg.MemoryLimit != "" {
-		size, err := parseSize(cfg.MemoryLimit)
-		if err != nil {
-			return nil, fmt.Errorf("invalid memory limit: %w", err)
-		}
-		fuseConfig.MemoryLimit = size / int64(totalDebrids) // Split among debrids
-	} else {
-		fuseConfig.MemoryLimit = 100 * 1024 * 1024 // Default 100MB per file
-	}
-
-	if cfg.MemoryChunkSize != "" {
-		size, err := parseSize(cfg.MemoryChunkSize)
-		if err != nil {
-			return nil, fmt.Errorf("invalid memory chunk size: %w", err)
-		}
-		fuseConfig.MemoryChunkSize = size
-	} else {
-		fuseConfig.MemoryChunkSize = 2 * 1024 * 1024 // Default 2MB
-	}
-
-	if cfg.MemoryBufferSize != "" {
-		size, err := parseSize(cfg.MemoryBufferSize)
-		if err != nil {
-			return nil, fmt.Errorf("invalid memory buffer size: %w", err)
-		}
-		fuseConfig.MemoryBufferSize = size
-	} else {
-		fuseConfig.MemoryBufferSize = 8 * 1024 * 1024 // Default 8MB
 	}
 
 	// Otherwise keep the default (4) from DefaultFuseConfig()

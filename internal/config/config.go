@@ -17,6 +17,7 @@ import (
 
 type (
 	RepairStrategy     string
+	RepairMode         string
 	WebDavFolderNaming string
 	MountType          string
 	DownloadAction     string
@@ -37,6 +38,9 @@ const (
 )
 
 const (
+	RepairModeArr RepairMode = "arr"
+	RepairModeAll RepairMode = "all"
+
 	RepairStrategyPerFile    RepairStrategy = "per_file"
 	RepairStrategyPerTorrent RepairStrategy = "per_torrent"
 
@@ -114,6 +118,7 @@ type CustomFolders struct {
 
 type Repair struct {
 	Enabled     bool           `json:"enabled,omitempty"`
+	Mode        RepairMode     `json:"repair_mode,omitempty"`
 	Interval    string         `json:"interval,omitempty"`
 	AutoProcess bool           `json:"auto_process,omitempty"`
 	Workers     int            `json:"workers,omitempty"`
@@ -878,6 +883,9 @@ func (c *Config) setDefaults() {
 	}
 
 	// Set repair defaults
+	if c.Repair.Mode == "" {
+		c.Repair.Mode = RepairModeArr
+	}
 	if c.Repair.Strategy == "" {
 		c.Repair.Strategy = RepairStrategyPerTorrent
 	}

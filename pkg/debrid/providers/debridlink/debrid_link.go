@@ -55,7 +55,7 @@ func New(dc config.Debrid, ratelimits map[string]ratelimit.Limiter) (*DebridLink
 	if autoExpiresLinksAfter == 0 || err != nil {
 		autoExpiresLinksAfter = 48 * time.Hour
 	}
-	return &DebridLink{
+	dbl := &DebridLink{
 		Host:                  "https://debrid-link.com/api/v2",
 		APIKey:                dc.APIKey,
 		accountsManager:       account.NewManager(dc, ratelimits["download"], _log),
@@ -64,7 +64,9 @@ func New(dc config.Debrid, ratelimits map[string]ratelimit.Limiter) (*DebridLink
 		client:                httpclient.New(clientConfig),
 		logger:                _log,
 		config:                dc,
-	}, nil
+	}
+	dbl.accountsManager.SetLinkFetcher(dbl.fetchDownloadLink)
+	return dbl, nil
 }
 
 func (dl *DebridLink) Config() config.Debrid {
@@ -353,24 +355,25 @@ func (dl *DebridLink) DeleteTorrent(torrentId string) error {
 	return nil
 }
 
-func (dl *DebridLink) GetFileDownloadLinks(t *types.Torrent) (map[string]types.DownloadLink, error) {
-	links := make(map[string]types.DownloadLink)
-	for _, file := range t.Files {
-		link, err := dl.accountsManager.GetDownloadLink(file.Link)
-		if err != nil {
-			return links, err
-		}
-		links[file.Name] = link
-	}
-	return links, nil
-}
-
 func (dl *DebridLink) RefreshDownloadLinks() error {
 	return nil
 }
 
+func (dl *DebridLink) fetchDownloadLink(id string, file *types.File) (types.DownloadLink, error) {
+	now := time.Now()
+	link := types.DownloadLink{
+		Token:        dl.APIKey,
+		Filename:     file.Name,
+		Link:         file.Link,
+		DownloadLink: file.Link,
+		Generated:    now,
+		ExpiresAt:    now.Add(dl.autoExpiresLinksAfter),
+	}
+	return link, nil
+}
+
 func (dl *DebridLink) GetDownloadLink(id string, file *types.File) (types.DownloadLink, error) {
-	return dl.accountsManager.GetDownloadLink(file.Link)
+	return dl.accountsManager.GetDownloadLink(id, file)
 }
 
 func (dl *DebridLink) GetDownloadUncached() bool {

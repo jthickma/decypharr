@@ -11,7 +11,7 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/sirrobot01/decypharr/pkg/manager"
 	"github.com/sirrobot01/decypharr/pkg/mount/dfs/common"
-	"github.com/sirrobot01/decypharr/pkg/mount/dfs/rfs"
+	"github.com/sirrobot01/decypharr/pkg/mount/dfs/vfs"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -26,7 +26,7 @@ const (
 // Dir implements a FUSE directory with RFS streaming
 type Dir struct {
 	fs.Inode
-	rfs           *rfs.Manager
+	rfs           *vfs.Manager
 	level         DirLevel
 	name          string
 	children      *xsync.Map[string, *ChildEntry] // key is the child name
@@ -49,7 +49,7 @@ var _ = (fs.NodeGetattrer)((*Dir)(nil))
 var _ = (fs.NodeUnlinker)((*Dir)(nil))
 
 // NewDir creates a new directory
-func NewDir(rfsManager *rfs.Manager, manager *manager.Manager, name string, level DirLevel, modTime uint64, config *common.FuseConfig, logger zerolog.Logger) *Dir {
+func NewDir(rfsManager *vfs.Manager, manager *manager.Manager, name string, level DirLevel, modTime uint64, config *common.FuseConfig, logger zerolog.Logger) *Dir {
 	return &Dir{
 		rfs:      rfsManager,
 		name:     name,
@@ -77,19 +77,13 @@ func (d *Dir) Getattr(ctx context.Context, fh fs.FileHandle, out *fuse.AttrOut) 
 }
 
 func (d *Dir) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
-	// First check if child already exists in cache (fast path)
-	child, exists := d.children.Load(name)
-	if exists {
-		return d.returnExistingChild(ctx, name, child, out)
-	}
-
 	// Not in cache - behavior depends on directory level
 	switch d.level {
 	case LevelRoot, LevelTorrent:
 		// For root and torrent levels, populate all children
 		d.populateChildren(ctx)
 		// Try again after population
-		child, exists = d.children.Load(name)
+		child, exists := d.children.Load(name)
 		if !exists {
 			return nil, syscall.ENOENT
 		}
@@ -180,8 +174,11 @@ func (d *Dir) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
 }
 
 func (d *Dir) Refresh() {
+	// Clear children map to force repopulation
+	d.children.Clear()
 	// Reset our internal populated flag
 	d.populated.Store(false)
+	// Notify kernel to invalidate directory content cache
 	_ = d.NotifyEntry(d.name)
 }
 
@@ -207,8 +204,7 @@ func (d *Dir) Unlink(ctx context.Context, name string) syscall.Errno {
 			d.logger.Error().Err(err).Str("file", fileNode.info.Name()).Msg("Failed to remove file from source")
 			return syscall.EIO
 		}
-		// Close the reader from RFS manager
-		_ = d.rfs.CloseReader(fileNode.info.Parent(), fileNode.info.Name())
+		// Note: Readers are automatically cleaned up by RFS manager's idle timeout
 	default:
 		return syscall.EPERM
 	}

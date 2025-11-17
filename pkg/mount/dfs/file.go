@@ -13,7 +13,7 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/sirrobot01/decypharr/pkg/manager"
 	"github.com/sirrobot01/decypharr/pkg/mount/dfs/common"
-	"github.com/sirrobot01/decypharr/pkg/mount/dfs/rfs"
+	"github.com/sirrobot01/decypharr/pkg/mount/dfs/vfs"
 )
 
 // File implements a FUSE file with RFS streaming
@@ -24,14 +24,14 @@ type File struct {
 	info      *manager.FileInfo
 	createdAt time.Time
 	content   []byte // For files like version.txt
-	rfs       *rfs.Manager
+	rfs       *vfs.Manager
 }
 
 // FileHandle implements file operations with RFS
 // Key optimization: RFS Reader is persistent across reads, not recreated per read!
 type FileHandle struct {
 	file       *File
-	rfsReader  *rfs.Reader // Persistent reader with connection pooling
+	reader     *vfs.Reader // Persistent reader with connection pooling
 	readerOnce sync.Once   // Ensures reader created exactly once
 	readerErr  error       // Stores any error from reader creation
 	closed     atomic.Bool
@@ -47,7 +47,7 @@ var _ = (fs.FileFlusher)((*FileHandle)(nil))
 var _ = (fs.FileFsyncer)((*FileHandle)(nil))
 
 // newFile creates a new file
-func newFile(rfsManager *rfs.Manager, config *common.FuseConfig, info *manager.FileInfo, logger zerolog.Logger) *File {
+func newFile(rfsManager *vfs.Manager, config *common.FuseConfig, info *manager.FileInfo, logger zerolog.Logger) *File {
 	return &File{
 		config: config,
 		logger: logger,
@@ -118,26 +118,24 @@ func (fh *FileHandle) Read(ctx context.Context, dest []byte, off int64) (fuse.Re
 	if fh.file.info.IsRemote() {
 		fh.readerOnce.Do(func() {
 			var err error
-			fh.rfsReader, err = fh.file.rfs.GetReader(fh.file.info)
+			fh.reader, err = fh.file.rfs.GetReader(fh.file.info)
 			fh.readerErr = err
 		})
 
 		// Check if creation failed
 		if fh.readerErr != nil {
-			fh.logger.Error().Err(fh.readerErr).Msg("Failed to create RFS reader")
 			return nil, syscall.EIO
 		}
 	}
 
 	// Ensure we have an RFS reader
-	if fh.rfsReader == nil {
+	if fh.reader == nil {
 		return nil, syscall.EIO
 	}
 
 	// Read from RFS (with automatic prefetching, connection reuse, etc.)
-	n, err := fh.rfsReader.ReadAt(dest, off)
+	n, err := fh.reader.ReadAt(dest, off)
 	if err != nil && err != io.EOF {
-		fh.logger.Error().Err(err).Int64("offset", off).Int("size", len(dest)).Msg("RFS read failed")
 		return nil, syscall.EIO
 	}
 	return fuse.ReadResultData(dest[:n]), 0
@@ -165,7 +163,7 @@ func (fh *FileHandle) Release(ctx context.Context) syscall.Errno {
 	// Release RFS reader reference
 	// The reader is pooled and managed by RFS Manager
 	// It will be automatically cleaned up when idle
-	if fh.rfsReader != nil {
+	if fh.reader != nil {
 		fh.file.rfs.ReleaseReader(fh.file.info)
 	}
 

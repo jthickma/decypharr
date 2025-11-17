@@ -21,11 +21,11 @@ type Mount interface {
 }
 
 type EventHandler struct {
-	OnRefresh func(dirs []string) error
+	Refresh func(dirs []string) error
 }
 
-func (m *Manager) AddEventHandlers(name string, e *EventHandler) {
-	m.events.Store(name, e)
+func (m *Manager) SetEventHandler(e *EventHandler) {
+	m.event = e
 }
 
 func (m *Manager) RefreshEntries(refreshMount bool) {
@@ -48,24 +48,16 @@ func (m *Manager) RefreshMount() error {
 		dirs = []string{"__all__"}
 	}
 
-	// We only want to refresh the default mount, which is the first one
-	handler, ok := m.events.Load(m.firstDebrid)
-	if ok && handler != nil {
-		return handler.OnRefresh(dirs)
-	} else {
-		// Attempt to refresh all mounts if no specific handler found
-		m.events.Range(func(key string, h *EventHandler) bool {
-			_ = h.OnRefresh(dirs)
-			return true
-		})
+	// Call event handler if set
+	if m.event != nil && m.event.Refresh != nil {
+		return m.event.Refresh(dirs)
 	}
-
 	return nil
 }
 
 func NewEventHandlers(mounter Mount) *EventHandler {
 	return &EventHandler{
-		OnRefresh: mounter.Refresh,
+		Refresh: mounter.Refresh,
 	}
 }
 

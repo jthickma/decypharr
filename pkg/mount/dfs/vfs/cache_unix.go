@@ -1,29 +1,19 @@
-//go:build linux || freebsd || openbsd || netbsd
+//go:build unix
 
 package vfs
 
 import (
 	"os"
 	"syscall"
-	"time"
 )
 
-// getFileAccessTime returns the access time for a file (platform-specific)
-func (m *Manager) getFileAccessTime(cacheKey string, fileInfo os.FileInfo) time.Time {
-	// Try to get from in-memory tracking first
-	if cacheKey != "" {
-		if f, ok := m.files.Load(cacheKey); ok {
-			if ts := f.lastAccessTime(); !ts.IsZero() {
-				return ts
-			}
-		}
+// getActualSize returns the actual disk usage of a file
+// For sparse files, this returns physical blocks used, not logical size
+func getActualSize(path string, info os.FileInfo) int64 {
+	if sysInfo, ok := info.Sys().(*syscall.Stat_t); ok {
+		// Get actual blocks used on disk (512-byte blocks)
+		return int64(sysInfo.Blocks) * 512
 	}
-
-	// Fallback: use file system access time (Linux/BSD)
-	if stat, ok := fileInfo.Sys().(*syscall.Stat_t); ok {
-		return time.Unix(int64(stat.Atim.Sec), int64(stat.Atim.Nsec))
-	}
-
-	// Last resort: use modification time
-	return fileInfo.ModTime()
+	// Fallback to logical size
+	return info.Size()
 }

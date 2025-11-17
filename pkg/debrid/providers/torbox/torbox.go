@@ -9,7 +9,6 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/imroc/req/v3"
@@ -60,7 +59,7 @@ func New(dc config.Debrid, ratelimits map[string]ratelimit.Limiter) (*Torbox, er
 		autoExpiresLinksAfter = 48 * time.Hour
 	}
 
-	return &Torbox{
+	tb := &Torbox{
 		Host:                  "https://api.torbox.app/v1",
 		APIKey:                dc.APIKey,
 		accountsManager:       account.NewManager(dc, ratelimits["download"], _log),
@@ -68,7 +67,9 @@ func New(dc config.Debrid, ratelimits map[string]ratelimit.Limiter) (*Torbox, er
 		autoExpiresLinksAfter: autoExpiresLinksAfter,
 		client:                httpclient.New(clientConfig),
 		logger:                _log,
-	}, nil
+	}
+	tb.accountsManager.SetLinkFetcher(tb.fetchDownloadLink)
+	return tb, nil
 }
 
 func (tb *Torbox) Config() config.Debrid {
@@ -406,59 +407,11 @@ func (tb *Torbox) DeleteTorrent(torrentId string) error {
 	return nil
 }
 
-func (tb *Torbox) GetFileDownloadLinks(t *types.Torrent) (map[string]types.DownloadLink, error) {
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-	var firstErr error
-
-	files := make(map[string]types.File)
-	links := make(map[string]types.DownloadLink)
-
-	_files := t.GetFiles()
-	wg.Add(len(_files))
-
-	for _, f := range _files {
-		go func(file types.File) {
-			defer wg.Done()
-
-			link, err := tb.GetDownloadLink(t.Id, &file)
-			if err != nil {
-				mu.Lock()
-				if firstErr == nil {
-					firstErr = err
-				}
-				mu.Unlock()
-				return
-			}
-			if link.Empty() {
-				mu.Lock()
-				if firstErr == nil {
-					firstErr = fmt.Errorf("tobox API error: download link not found for file %s", file.Name)
-				}
-				mu.Unlock()
-				return
-			}
-
-			file.DownloadLink = link
-			mu.Lock()
-			files[file.Name] = file
-			links[link.Link] = link
-			mu.Unlock()
-		}(f)
-	}
-
-	wg.Wait()
-
-	if firstErr != nil {
-		return nil, firstErr
-	}
-
-	// AddOrUpdate links to cache
-	t.Files = files
-	return links, nil
+func (tb *Torbox) GetDownloadLink(id string, file *types.File) (types.DownloadLink, error) {
+	return tb.accountsManager.GetDownloadLink(id, file)
 }
 
-func (tb *Torbox) GetDownloadLink(id string, file *types.File) (types.DownloadLink, error) {
+func (tb *Torbox) fetchDownloadLink(id string, file *types.File) (types.DownloadLink, error) {
 	url := "/api/torrents/requestdl/"
 	var data DownloadLinksResponse
 
@@ -495,9 +448,6 @@ func (tb *Torbox) GetDownloadLink(id string, file *types.File) (types.DownloadLi
 		Generated:    now,
 		ExpiresAt:    now.Add(tb.autoExpiresLinksAfter),
 	}
-
-	tb.accountsManager.StoreDownloadLink(dl)
-
 	return dl, nil
 }
 

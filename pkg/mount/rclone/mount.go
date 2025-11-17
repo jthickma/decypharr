@@ -69,7 +69,7 @@ func NewMount(mountName string, mgr *manager.Manager, rcClient *rclone.Client) (
 		logger:    _logger,
 		client:    rcClient,
 	}
-	mgr.AddEventHandlers(mountName, manager.NewEventHandlers(m))
+	mgr.SetEventHandler(manager.NewEventHandlers(m))
 	return m, nil
 }
 

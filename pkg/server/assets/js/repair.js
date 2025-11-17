@@ -20,9 +20,15 @@ class RepairManager {
 
         this.refs = {
             repairForm: document.getElementById('repairForm'),
+            arrModeRadio: document.getElementById('arrModeRadio'),
+            allModeRadio: document.getElementById('allModeRadio'),
+            arrModeFields: document.getElementById('arrModeFields'),
+            allModeFields: document.getElementById('allModeFields'),
             arrSelect: document.getElementById('arrSelect'),
             mediaIds: document.getElementById('mediaIds'),
+            torrentFilter: document.getElementById('torrentFilter'),
             autoProcess: document.getElementById('autoProcess'),
+            autoProcessDescription: document.getElementById('autoProcessDescription'),
             submitBtn: document.getElementById('submitRepair'),
 
             // Jobs table
@@ -79,6 +85,10 @@ class RepairManager {
         // Form submission
         this.refs.repairForm.addEventListener('submit', (e) => this.handleFormSubmit(e));
 
+        // Mode switching
+        this.refs.arrModeRadio.addEventListener('change', () => this.handleModeSwitch());
+        this.refs.allModeRadio.addEventListener('change', () => this.handleModeSwitch());
+
         // Jobs table events
         this.refs.refreshJobs.addEventListener('click', () => this.loadJobs());
         this.refs.deleteSelectedJobs.addEventListener('click', () => this.deleteSelectedJobs());
@@ -98,6 +108,22 @@ class RepairManager {
         // Table row events (using event delegation)
         this.refs.jobsTableBody.addEventListener('click', (e) => this.handleJobTableClick(e));
         this.refs.brokenItemsTableBody.addEventListener('click', (e) => this.handleItemTableClick(e));
+    }
+
+    handleModeSwitch() {
+        const isArrMode = this.refs.arrModeRadio.checked;
+
+        if (isArrMode) {
+            // Show Arr mode fields, hide All mode fields
+            this.refs.arrModeFields.classList.remove('hidden');
+            this.refs.allModeFields.classList.add('hidden');
+            this.refs.autoProcessDescription.textContent = 'Automatically delete broken symlinks and re-search media';
+        } else {
+            // Show All mode fields, hide Arr mode fields
+            this.refs.arrModeFields.classList.add('hidden');
+            this.refs.allModeFields.classList.remove('hidden');
+            this.refs.autoProcessDescription.textContent = 'Automatically attempt to fix broken torrents';
+        }
     }
 
     async loadArrInstances() {
@@ -126,12 +152,30 @@ class RepairManager {
     async handleFormSubmit(e) {
         e.preventDefault();
 
-        const arr = this.refs.arrSelect.value;
-        const mediaIdsValue = this.refs.mediaIds.value.trim();
+        const isArrMode = this.refs.arrModeRadio.checked;
+        let requestBody = {
+            autoProcess: this.refs.autoProcess.checked
+        };
 
-        const mediaIds = mediaIdsValue ?
-            mediaIdsValue.split(',').map(id => id.trim()).filter(Boolean) :
-            [];
+        if (isArrMode) {
+            // Arr mode - validate and collect arr-specific data
+            const arr = this.refs.arrSelect.value;
+            const mediaIdsValue = this.refs.mediaIds.value.trim();
+
+            const mediaIds = mediaIdsValue ?
+                mediaIdsValue.split(',').map(id => id.trim()).filter(Boolean) :
+                [];
+
+            requestBody.arr = arr;
+            requestBody.mediaIds = mediaIds.length > 0 ? mediaIds : null;
+        } else {
+            // All mode - collect torrent filter if provided
+            const torrentFilter = this.refs.torrentFilter.value.trim();
+            requestBody.mode = 'all';
+            if (torrentFilter) {
+                requestBody.torrentFilter = torrentFilter;
+            }
+        }
 
         try {
             window.decypharrUtils.setButtonLoading(this.refs.submitBtn, true);
@@ -139,11 +183,7 @@ class RepairManager {
             const response = await window.decypharrUtils.fetcher('/api/repair', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    arr: arr,
-                    mediaIds: mediaIds.length > 0 ? mediaIds : null,
-                    autoProcess: this.refs.autoProcess.checked
-                })
+                body: JSON.stringify(requestBody)
             });
 
             if (!response.ok) {
@@ -160,6 +200,7 @@ class RepairManager {
 
             // Clear form
             this.refs.mediaIds.value = '';
+            this.refs.torrentFilter.value = '';
 
             // Refresh jobs list
             await this.loadJobs();

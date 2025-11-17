@@ -13,7 +13,7 @@ type Stats struct {
 	Ready     bool                     `json:"ready"`
 	Core      rclone.CoreStatsResponse `json:"core"`
 	Memory    rclone.MemoryStats       `json:"memory"`
-	Mounts    map[string]*MountInfo    `json:"mounts"`
+	Mount     *MountInfo               `json:"mounts"`
 	Bandwidth rclone.BandwidthStats    `json:"bandwidth"`
 	Version   rclone.VersionResponse   `json:"version"`
 }
@@ -43,16 +43,10 @@ func (m *Manager) Stats() map[string]interface{} {
 	}
 
 	// Add mount infos
-	m.mu.RLock()
-	mountInfos := make(map[string]*MountInfo)
-	for name, mount := range m.mounts {
-		info := mount.getMountInfo()
-		if info != nil {
-			mountInfos[name] = info
-		}
+	if m.mount != nil {
+		mountInfo := m.mount.getMountInfo()
+		stats.Mount = mountInfo
 	}
-	m.mu.RUnlock()
-	stats.Mounts = mountInfos
 
 	// GetReader version info
 	versionResp, err := m.client.GetVersion()

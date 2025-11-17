@@ -21,11 +21,6 @@ type Stats struct {
 	BufferSize    int64
 }
 
-// NewDFSStats creates a new stats tracker
-func NewDFSStats() *Stats {
-	return &Stats{}
-}
-
 // Reset resets all statistics to zero
 func (s *Stats) Reset() {
 	s.CacheDirSize.Store(0)

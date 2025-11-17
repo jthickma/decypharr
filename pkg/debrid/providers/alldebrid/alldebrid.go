@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"path/filepath"
 	"strconv"
-	"sync"
 	"time"
 
 	"github.com/imroc/req/v3"
@@ -53,7 +52,7 @@ func New(dc config.Debrid, ratelimits map[string]ratelimit.Limiter) (*AllDebrid,
 	if autoExpiresLinksAfter == 0 || err != nil {
 		autoExpiresLinksAfter = 48 * time.Hour
 	}
-	return &AllDebrid{
+	ad := &AllDebrid{
 		Host:                  "http://api.alldebrid.com/v4.1",
 		APIKey:                dc.APIKey,
 		accountsManager:       account.NewManager(dc, ratelimits["download"], _log),
@@ -61,7 +60,9 @@ func New(dc config.Debrid, ratelimits map[string]ratelimit.Limiter) (*AllDebrid,
 		client:                httpclient.New(clientConfig),
 		logger:                _log,
 		config:                dc,
-	}, nil
+	}
+	ad.accountsManager.SetLinkFetcher(ad.fetchDownloadLink)
+	return ad, nil
 }
 
 func (ad *AllDebrid) Config() config.Debrid {
@@ -306,59 +307,7 @@ func (ad *AllDebrid) DeleteTorrent(torrentId string) error {
 	return nil
 }
 
-func (ad *AllDebrid) GetFileDownloadLinks(t *types.Torrent) (map[string]types.DownloadLink, error) {
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-	var firstErr error
-
-	files := make(map[string]types.File)
-	links := make(map[string]types.DownloadLink)
-
-	_files := t.GetFiles()
-	wg.Add(len(_files))
-
-	for _, f := range _files {
-		go func(file types.File) {
-			defer wg.Done()
-
-			link, err := ad.GetDownloadLink(t.Id, &file)
-			if err != nil {
-				mu.Lock()
-				if firstErr == nil {
-					firstErr = err
-				}
-				mu.Unlock()
-				return
-			}
-			if link.Empty() {
-				mu.Lock()
-				if firstErr == nil {
-					firstErr = fmt.Errorf("realdebrid API error: download link not found for file %s", file.Name)
-				}
-				mu.Unlock()
-				return
-			}
-
-			file.DownloadLink = link
-			mu.Lock()
-			files[file.Name] = file
-			links[link.Link] = link
-			mu.Unlock()
-		}(f)
-	}
-
-	wg.Wait()
-
-	if firstErr != nil {
-		return nil, firstErr
-	}
-
-	// AddOrUpdate links to cache
-	t.Files = files
-	return links, nil
-}
-
-func (ad *AllDebrid) GetDownloadLink(id string, file *types.File) (types.DownloadLink, error) {
+func (ad *AllDebrid) fetchDownloadLink(id string, file *types.File) (types.DownloadLink, error) {
 	url := "/link/unlock"
 	var data DownloadLink
 
@@ -393,9 +342,11 @@ func (ad *AllDebrid) GetDownloadLink(id string, file *types.File) (types.Downloa
 		Generated:    now,
 		ExpiresAt:    now.Add(ad.autoExpiresLinksAfter),
 	}
-	// Set the download link in the account
-	ad.accountsManager.StoreDownloadLink(dl)
 	return dl, nil
+}
+
+func (ad *AllDebrid) GetDownloadLink(id string, file *types.File) (types.DownloadLink, error) {
+	return ad.accountsManager.GetDownloadLink(id, file)
 }
 
 func (ad *AllDebrid) GetTorrents() ([]*types.Torrent, error) {

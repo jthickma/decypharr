@@ -15,7 +15,6 @@ func (m *Manager) initEntryCache() {
 type EntryCacheItem struct {
 	current  *FileInfo
 	children []FileInfo
-	refresh  bool
 }
 
 type EntryCache struct {

@@ -74,7 +74,6 @@ func (q *QBit) handleTorrentsInfo(w http.ResponseWriter, r *http.Request) {
 	hashes := getHashes(ctx)
 
 	// Convert hashes to filter function
-
 	torrents := q.manager.Queue().ListFilter(category, storage.TorrentState(state), hashes, "added_on", false)
 	qbitTorrents := make([]Torrent, len(torrents))
 	for i, t := range torrents {
@@ -168,12 +167,12 @@ func (q *QBit) handleTorrentsAdd(w http.ResponseWriter, r *http.Request) {
 func (q *QBit) handleTorrentsDelete(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	hashes := getHashes(ctx)
+
 	if len(hashes) == 0 {
 		http.Error(w, "No hashes provided", http.StatusBadRequest)
 		return
 	}
 	for _, hash := range hashes {
-		q.logger.Debug().Msgf("Deleting torrent %s", hash)
 		err := q.manager.Queue().Delete(hash, nil)
 		if err != nil {
 			q.logger.Warn().Err(err).Msgf("Error deleting torrent")

@@ -39,10 +39,6 @@ func (m *Manager) GetDownloadLink(torrent *storage.Torrent, filename string) (ty
 	// Use singleflight to deduplicate concurrent requests
 	v, err, _ := m.downloadSG.Do(fileLink, func() (interface{}, error) {
 		// Double-check cache inside singleflight
-		if dl, err := m.checkDownloadLink(fileLink, torrent.ActiveDebrid); err == nil && !dl.Empty() {
-			return dl, nil
-		}
-
 		// Fetch the download link
 		dl, err := m.fetchDownloadLink(torrent, file, placementFile, torrent.ActiveDebrid)
 		if err != nil {
@@ -67,7 +63,7 @@ func (m *Manager) GetDownloadLink(torrent *storage.Torrent, filename string) (ty
 // getPlacementFile retrieves the placement file with refresh/repair fallback
 func (m *Manager) getPlacementFile(torrent *storage.Torrent, filename string) (*storage.PlacementFile, error) {
 	// GetReader the file to determine which infohash and debrid it belongs to
-	file, ok := torrent.Files[filename]
+	_, ok := torrent.Files[filename]
 	if !ok {
 		return nil, fmt.Errorf("file %s not found in torrent", filename)
 	}
@@ -86,7 +82,7 @@ func (m *Manager) getPlacementFile(torrent *storage.Torrent, filename string) (*
 		}
 
 		// Re-fetch file and placement after refresh
-		file = refreshed.Files[filename]
+		file := refreshed.Files[filename]
 		if file == nil {
 			return nil, fmt.Errorf("file disappeared after refresh")
 		}
@@ -131,8 +127,6 @@ func (m *Manager) fetchDownloadLink(torrent *storage.Torrent, file *storage.File
 		ByteRange: file.ByteRange,
 		Deleted:   file.Deleted,
 	}
-
-	m.logger.Trace().Msgf("Getting download link for %s(%s)", file.Name, placementFile.Link)
 	downloadLink, err := client.GetDownloadLink(placement.ID, &debridFile)
 	if err != nil {
 		if errors.Is(err, utils.HosterUnavailableError) {
@@ -167,31 +161,7 @@ func (m *Manager) fetchDownloadLink(torrent *storage.Torrent, file *storage.File
 			return emptyDownloadLink, fmt.Errorf("failed to get download link: %w", err)
 		}
 	}
-
-	if downloadLink.Empty() {
-		return emptyDownloadLink, fmt.Errorf("download link is empty")
-	}
-
 	return downloadLink, nil
-}
-
-// checkDownloadLink checks if a download link is cached and valid
-func (m *Manager) checkDownloadLink(link string, debridName string) (types.DownloadLink, error) {
-	client := m.DebridClient(debridName)
-	if client == nil {
-		return types.DownloadLink{}, fmt.Errorf("debrid client not found: %s", debridName)
-	}
-
-	dl, err := client.AccountManager().GetDownloadLink(link)
-	if err != nil {
-		return dl, err
-	}
-
-	if m.invalidDownloadLinks != nil && !m.downloadLinkIsInvalid(dl.DownloadLink) {
-		return dl, nil
-	}
-
-	return types.DownloadLink{}, fmt.Errorf("download link not found for %s", link)
 }
 
 // IncrementFailedLinkCounter increments the failure counter for a link
@@ -234,31 +204,16 @@ func (m *Manager) MarkLinkAsInvalid(downloadLink types.DownloadLink, reason stri
 		// Delete the download link from the account
 		account, err := accountManager.GetAccount(downloadLink.Token)
 		if err != nil {
-			m.logger.Error().Err(err).Str("token", utils.Mask(downloadLink.Token)).Msg("Failed to get account to delete download link")
 			return
 		}
 		if account == nil {
-			m.logger.Error().Str("token", utils.Mask(downloadLink.Token)).Msg("Account not found to delete download link")
 			return
 		}
 
 		if err := client.DeleteDownloadLink(account, downloadLink); err != nil {
-			m.logger.Error().Err(err).Str("token", utils.Mask(downloadLink.Token)).Msg("Failed to delete download link from account")
 			return
 		}
 	}
-}
-
-// downloadLinkIsInvalid checks if a download link is marked as invalid
-func (m *Manager) downloadLinkIsInvalid(downloadLink string) bool {
-	if m.invalidDownloadLinks == nil {
-		return false
-	}
-
-	if _, ok := m.invalidDownloadLinks.Load(downloadLink); ok {
-		return true
-	}
-	return false
 }
 
 // GetDownloadByteRange gets the byte range for a file

@@ -110,6 +110,21 @@
                                     <input type="text" class="input w-full" id="appUrl" name="appUrl" placeholder="http://192.168.0.1:8282">
                                         <span class="text-sm opacity-70">Full URL to access to the application</span>
                                 </div>
+                                <div>
+                                    <label class="label" for="minFileSize">
+                                        <span class="font-medium">Minimum File Size</span>
+                                    </label>
+                                    <input type="text" class="input w-full" id="minFileSize" name="min_file_size" placeholder="10MB">
+                                    <span class="text-sm opacity-70">Minimum file size to download</span>
+                                </div>
+
+                                <div>
+                                    <label class="label" for="maxFileSize">
+                                        <span class="font-medium">Maximum File Size</span>
+                                    </label>
+                                    <input type="text" class="input w-full" id="maxFileSize" name="max_file_size" placeholder="50GB">
+                                    <span class="text-sm opacity-70">Maximum file size to download</span>
+                                </div>
                             </div>
 
                             <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -129,41 +144,8 @@
                                 </div>
                             </div>
 
-                            <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                                <div>
-                                    <label class="label" for="minFileSize">
-                                        <span class="font-medium">Minimum File Size</span>
-                                    </label>
-                                    <input type="text" class="input w-full" id="minFileSize" name="min_file_size" placeholder="10MB">
-                                        <span class="text-sm opacity-70">Minimum file size to download</span>
-                                </div>
-
-                                <div>
-                                    <label class="label" for="maxFileSize">
-                                        <span class="font-medium">Maximum File Size</span>
-                                    </label>
-                                    <input type="text" class="input w-full" id="maxFileSize" name="max_file_size" placeholder="50GB">
-                                        <span class="text-sm opacity-70">Maximum file size to download</span>
-                                </div>
-
-                                <div>
-                                    <label class="label" for="removeStalledAfter">
-                                        <span class="font-medium">Remove Stalled After</span>
-                                    </label>
-                                    <input type="text" class="input w-full" id="removeStalledAfter" name="remove_stalled_after" placeholder="1h">
-                                        <span class="text-sm opacity-70">Duration before removing stalled torrents</span>
-                                </div>
-                                <div>
-                                    <label class="label" for="callbackUrl">
-                                        <span class="font-medium">Callback URL</span>
-                                    </label>
-                                    <input type="text" class="input w-full" id="callbackUrl" name="callback_url" placeholder="http://example.com/callback">
-                                        <span class="text-sm opacity-70">Optional callback URL for download status updates</span>
-                                </div>
-                            </div>
-
                             <div class="divider">
-                                <span class="text-lg font-semibold">Management Settings</span>
+                                <span class="text-lg font-semibold">Management & Qbittorent Settings</span>
                             </div>
                             <div class="space-y-6">
                                 <div class="space-y-4">
@@ -172,8 +154,8 @@
                                             <label class="label" for="download_folder">
                                                 <span class="font-medium">Download Folder</span>
                                             </label>
-                                            <input type="text" class="input w-full" name="download_folder" id="download_folder">
-                                            <span class="text-sm opacity-70">Folder where downloaded files will be stored</span>
+                                            <input type="text" class="input w-full" name="download_folder" id="download_folder" placeholder="/mnt/symlinks/">
+                                            <span class="text-sm opacity-70">Folder where downloaded files will be stored(this is your qbittorent download folder)</span>
                                         </div>
                                         <div>
                                             <label class="label" for="default_download_action">
@@ -198,7 +180,21 @@
                                                 <span class="font-medium">Maximum Downloads</span>
                                             </label>
                                             <input type="number" class="input w-full" name="max_downloads" id="max_downloads" min="0">
-                                            <span class="text-sm opacity-70">Maximum simultaneous downloads (0 = unlimited)</span>
+                                            <span class="text-sm opacity-70">Maximum simultaneous downloads (0 = unlimited. This is used when not symlink-ing)</span>
+                                        </div>
+                                        <div>
+                                            <label class="label" for="removeStalledAfter">
+                                                <span class="font-medium">Remove Stalled After</span>
+                                            </label>
+                                            <input type="text" class="input w-full" id="removeStalledAfter" name="remove_stalled_after" placeholder="1h">
+                                            <span class="text-sm opacity-70">Duration before removing stalled torrents</span>
+                                        </div>
+                                        <div>
+                                            <label class="label" for="callbackUrl">
+                                                <span class="font-medium">Callback URL</span>
+                                            </label>
+                                            <input type="text" class="input w-full" id="callbackUrl" name="callback_url" placeholder="http://example.com/callback">
+                                            <span class="text-sm opacity-70">Optional callback URL for download status updates</span>
                                         </div>
                                         <div>
                                             <label class="label cursor-pointer justify-start gap-3">
@@ -425,7 +421,18 @@
                                 </label>
                             </div>
 
-                            <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                            <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                                <div>
+                                    <label class="label" for="repair.repair_mode">
+                                        <span class="font-medium">Repair Mode</span>
+                                    </label>
+                                    <select class="select w-full" name="repair.repair_mode" id="repair.repair_mode">
+                                        <option value="arr" selected>Arr Mode</option>
+                                        <option value="all">All Torrents</option>
+                                    </select>
+                                    <p class="text-sm opacity-70">Choose repair scope. "Arr Mode" repairs only files managed by Arr services. "All Torrents" scans and repairs all torrents in the system.</p>
+                                </div>
+
                                 <div>
                                     <label class="label" for="repair.interval">
                                         <span class="font-medium">Repair Interval</span>

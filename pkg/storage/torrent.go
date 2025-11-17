@@ -85,33 +85,6 @@ func (s *Storage) BatchAddOrUpdate(torrents []*Torrent) error {
 	})
 }
 
-func (s *Storage) getInfoHash(name string) (string, error) {
-	if name == "" {
-		return "", fmt.Errorf("either infohash or name must be provided")
-	}
-
-	var infohash string
-
-	err := s.db.View(func(tx *bolt.Tx) error {
-		bucket := tx.Bucket([]byte(nameEntryBucket))
-		if bucket == nil {
-			return fmt.Errorf("name index bucket not found")
-		}
-
-		data := bucket.Get([]byte(name))
-		if data == nil {
-			return fmt.Errorf("torrent not found by name: %s", name)
-		}
-		var entry TorrentEntry
-		if err := msgpack.Unmarshal(data, &entry); err != nil {
-			return fmt.Errorf("failed to unmarshal name entry: %w", err)
-		}
-		return nil
-	})
-
-	return infohash, err
-}
-
 func (s *Storage) Exists(infohash string) (bool, error) {
 	var exists bool
 

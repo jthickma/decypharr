@@ -64,11 +64,10 @@ func (s *Server) WebRoutes() http.Handler {
 			// Browse - WebDAV-style hierarchical file browser
 			r.Route("/browse", func(r chi.Router) {
 				// Hierarchical browse endpoints
-				r.Get("/", s.handleBrowseRoot)                                             // Root: mount points
-				r.Get("/{mount}", s.handleBrowseMount)                                     // Mount: groups (__all__, __bad__, etc.)
-				r.Get("/{mount}/{group}", s.handleBrowseGroup)                             // Group: torrents
-				r.Get("/{mount}/{group}/{subgroup}/{torrent}", s.handleBrowseTorrentFiles) // Torrent files (with subgroup)
-				r.Get("/{mount}/{group}/{torrent}", s.handleBrowseTorrentFiles)            // Torrent files (without subgroup) - This route needs to come after the subgroup route
+				r.Get("/", s.handleBrowseMount)                                    // Mount: groups (__all__, __bad__, etc.)
+				r.Get("/{group}", s.handleBrowseGroup)                             // Group: torrents
+				r.Get("/{group}/{subgroup}/{torrent}", s.handleBrowseTorrentFiles) // Torrent files (with subgroup)
+				r.Get("/{group}/{torrent}", s.handleBrowseTorrentFiles)            // Torrent files (without subgroup) - This route needs to come after the subgroup route
 
 				// Torrent operations
 				r.Delete("/torrents/{id}", s.handleDeleteBrowseTorrent)

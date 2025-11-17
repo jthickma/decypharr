@@ -378,10 +378,17 @@ type Torrent struct {
 	Downloaded   int64                `json:"downloaded"`
 	MagnetURI    string               `json:"magnet_uri"`
 	Files        []TorrentFile        `json:"files"`
+
+	Ratio      int    `json:"ratio,omitempty"`
+	RatioLimit int    `json:"ratio_limit,omitempty"`
+	UpLimit    int    `json:"up_limit,omitempty"`
+	DlLimit    int    `json:"dl_limit,omitempty"`
+	AutoTmm    bool   `json:"auto_tmm,omitempty"`
+	Tracker    string `json:"tracker,omitempty"`
 }
 
 type TorrentFile struct {
-	Index        int     `json:"index,omitempty"`
+	Index        int     `json:"index"`
 	Name         string  `json:"name,omitempty"`
 	Size         int64   `json:"size,omitempty"`
 	Progress     int     `json:"progress,omitempty"`
@@ -413,6 +420,13 @@ func convertToQBitTorrentTorrent(t *storage.Torrent) Torrent {
 		Downloaded:   int64(float64(t.Size) * t.Progress),
 		MagnetURI:    t.Magnet,
 		Files:        getTorrentFiles(t),
+
+		UpLimit:    -1,
+		DlLimit:    -1,
+		AutoTmm:    false,
+		Ratio:      1,
+		RatioLimit: 1,
+		Tracker:    "udp://tracker.opentrackr.org:1337",
 	}
 
 	return qbitTorrent

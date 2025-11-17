@@ -115,7 +115,7 @@ class ConfigManager {
     populateRepairSettings(repairConfig) {
         if (!repairConfig) return;
 
-        const fields = ['enabled', 'interval', 'workers', 'strategy', 'auto_process'];
+        const fields = ['enabled', 'interval', 'workers', 'strategy', 'auto_process', 'repair_mode'];
 
         fields.forEach(field => {
             const element = document.querySelector(`[name="repair.${field}"]`);
@@ -219,6 +219,25 @@ class ConfigManager {
         // Initialize WebDAV toggle for this debrid
         const newDebrid = this.refs.debridConfigs.lastElementChild;
 
+        // Add event listener to name input for real-time updates
+        const nameInput = newDebrid.querySelector(`[name="debrid[${this.debridCount}].name"]`);
+        if (nameInput) {
+            nameInput.addEventListener('blur', () => {
+                this.updateArrDebridDropdowns();
+            });
+        }
+
+        // Add event listener to delete button for cleanup
+        const deleteBtn = newDebrid.querySelector('.btn-error');
+        if (deleteBtn) {
+            deleteBtn.addEventListener('click', () => {
+                // Small delay to allow DOM update before refreshing dropdowns
+                setTimeout(() => {
+                    this.updateArrDebridDropdowns();
+                }, 100);
+            });
+        }
+
         // Populate data if provided
         if (Object.keys(data).length > 0) {
             this.populateDebridData(this.debridCount, data);
@@ -242,6 +261,9 @@ class ConfigManager {
         }
 
         this.debridCount++;
+
+        // Update all Arr config debrid dropdowns
+        this.updateArrDebridDropdowns();
     }
 
     populateDebridData(index, data) {
@@ -344,6 +366,24 @@ class ConfigManager {
                                        name="debrid[${index}].rate_limit" id="debrid[${index}].rate_limit" 
                                        placeholder="250/minute" value="250/minute">
                                 <span class="text-sm opacity-70">API rate limit for this service</span>
+                            </div>
+                            <div>
+                                <label class="label" for="debrid[${index}].repair_rate_limit">
+                                    <span class=" font-medium">Repair Rate Limit</span>
+                                </label>
+                                <input type="text" class="input w-full" 
+                                       name="debrid[${index}].repair_rate_limit" id="debrid[${index}].repair_rate_limit" 
+                                       placeholder="100/minute">
+                                <span class="text-sm opacity-70">API rate limit for repair operations</span>
+                            </div>
+                            <div>
+                                <label class="label" for="debrid[${index}].download_rate_limit">
+                                    <span class=" font-medium">Download Rate Limit</span>
+                                </label>
+                                <input type="text" class="input w-full" 
+                                       name="debrid[${index}].download_rate_limit" id="debrid[${index}].download_rate_limit" 
+                                       placeholder="150/minute">
+                                <span class="text-sm opacity-70">API rate limit for download operations</span>
                             </div>
                             <div>
                                 <label class="label" for="debrid[${index}].proxy">
@@ -725,6 +765,47 @@ class ConfigManager {
         });
     }
 
+    getDebridOptions() {
+        // Collect all debrid names from the form
+        const debridNames = [];
+        const debridConfigs = document.querySelectorAll('.debrid-config');
+
+        debridConfigs.forEach((config) => {
+            const index = config.getAttribute('data-index');
+            const nameInput = document.querySelector(`[name="debrid[${index}].name"]`);
+            if (nameInput && nameInput.value.trim()) {
+                debridNames.push(nameInput.value.trim());
+            }
+        });
+
+        // Generate option elements
+        return debridNames.map(name => `<option value="${window.decypharrUtils.escapeHtml(name)}">${window.decypharrUtils.escapeHtml(name)}</option>`).join('');
+    }
+
+    updateArrDebridDropdowns() {
+        // Update all existing Arr config dropdowns with current debrid services
+        const arrConfigs = document.querySelectorAll('.arr-config');
+        const debridOptions = this.getDebridOptions();
+
+        arrConfigs.forEach((config) => {
+            const index = config.getAttribute('data-index');
+            const select = document.querySelector(`[name="arr[${index}].selected_debrid"]`);
+
+            if (select) {
+                // Save current selection
+                const currentValue = select.value;
+
+                // Update options while preserving "Auto Select"
+                select.innerHTML = `<option value="">Auto Select</option>${debridOptions}`;
+
+                // Restore selection if it still exists
+                if (currentValue) {
+                    select.value = currentValue;
+                }
+            }
+        });
+    }
+
     addArrConfig(data = {}) {
         const arrHtml = this.getArrTemplate(this.arrCount, data);
         this.refs.arrConfigs.insertAdjacentHTML('beforeend', arrHtml);
@@ -753,6 +834,9 @@ class ConfigManager {
     getArrTemplate(index, data = {}) {
         const isAutoDetected = data.source === 'auto';
 
+        // Get available debrid services
+        const debridOptions = this.getDebridOptions();
+
         return `
             <div class="card bg-base-100 border border-base-300 shadow-sm arr-config ${isAutoDetected ? 'border-info' : ''}" data-index="${index}">
                 <div class="card-body">
@@ -776,9 +860,9 @@ class ConfigManager {
                             <label class="label" for="arr[${index}].name">
                                 <span class=" font-medium">Service Name</span>
                             </label>
-                            <input type="text" class="input ${isAutoDetected ? 'input-disabled' : ''}" 
-                                   name="arr[${index}].name" id="arr[${index}].name" 
-                                   ${isAutoDetected ? 'readonly' : 'required'} 
+                            <input type="text" class="input ${isAutoDetected ? 'input-disabled' : ''}"
+                                   name="arr[${index}].name" id="arr[${index}].name"
+                                   ${isAutoDetected ? 'readonly' : 'required'}
                                    placeholder="sonarr, radarr, etc.">
                         </div>
 
@@ -786,9 +870,9 @@ class ConfigManager {
                             <label class="label" for="arr[${index}].host">
                                 <span class=" font-medium">Host URL</span>
                             </label>
-                            <input type="url" class="input ${isAutoDetected ? 'input-disabled' : ''}" 
-                                   name="arr[${index}].host" id="arr[${index}].host" 
-                                   ${isAutoDetected ? 'readonly' : 'required'} 
+                            <input type="url" class="input ${isAutoDetected ? 'input-disabled' : ''}"
+                                   name="arr[${index}].host" id="arr[${index}].host"
+                                   ${isAutoDetected ? 'readonly' : 'required'}
                                    placeholder="http://localhost:8989">
                         </div>
 
@@ -797,8 +881,8 @@ class ConfigManager {
                                 <span class=" font-medium">API Token</span>
                             </label>
                             <div class="password-toggle-container">
-                                <input type="password" class="input input-has-toggle ${isAutoDetected ? 'input-disabled' : ''}" 
-                                       name="arr[${index}].token" id="arr[${index}].token" 
+                                <input type="password" class="input input-has-toggle ${isAutoDetected ? 'input-disabled' : ''}"
+                                       name="arr[${index}].token" id="arr[${index}].token"
                                        ${isAutoDetected ? 'readonly' : 'required'}>
                                 <button type="button" class="password-toggle-btn ${isAutoDetected ? 'opacity-50 cursor-not-allowed' : ''}"
                                         ${isAutoDetected ? 'disabled' : ''}>
@@ -806,17 +890,14 @@ class ConfigManager {
                                 </button>
                             </div>
                         </div>
-                        
+
                         <div>
                             <label class="label" for="arr[${index}].selected_debrid">
                                 <span class=" font-medium">Preferred Debrid Service</span>
                             </label>
                             <select class="select w-full" name="arr[${index}].selected_debrid" id="arr[${index}].selected_debrid">
-                                <option value="" selected>Auto-select</option>
-                                <option value="realdebrid">Real Debrid</option>
-                                <option value="alldebrid">AllDebrid</option>
-                                <option value="debridlink">Debrid Link</option>
-                                <option value="torbox">Torbox</option>
+                                <option value="">Auto Select</option>
+                                ${debridOptions}
                             </select>
                             <span class="text-sm opacity-70">Which debrid service this Arr should prefer</span>
                         </div>
@@ -825,7 +906,7 @@ class ConfigManager {
                     <div class="grid grid-cols-3 gap-4">
                         <div>
                             <label class="label cursor-pointer justify-start gap-2">
-                                <input type="checkbox" class="checkbox checkbox-sm checkbox-primary" 
+                                <input type="checkbox" class="checkbox checkbox-sm checkbox-primary"
                                        name="arr[${index}].cleanup" id="arr[${index}].cleanup">
                                 <span class=" text-sm">Cleanup Queue</span>
                             </label>
@@ -833,7 +914,7 @@ class ConfigManager {
 
                         <div>
                             <label class="label cursor-pointer justify-start gap-2">
-                                <input type="checkbox" class="checkbox checkbox-sm checkbox-primary" 
+                                <input type="checkbox" class="checkbox checkbox-sm checkbox-primary"
                                        name="arr[${index}].skip_repair" id="arr[${index}].skip_repair">
                                 <span class=" text-sm">Skip Repair</span>
                             </label>
@@ -841,7 +922,7 @@ class ConfigManager {
 
                         <div>
                             <label class="label cursor-pointer justify-start gap-2">
-                                <input type="checkbox" class="checkbox checkbox-sm checkbox-primary" 
+                                <input type="checkbox" class="checkbox checkbox-sm checkbox-primary"
                                        name="arr[${index}].download_uncached" id="arr[${index}].download_uncached">
                                 <span class=" text-sm">Download Uncached</span>
                             </label>
@@ -990,6 +1071,8 @@ class ConfigManager {
                 provider: document.querySelector(`[name="debrid[${i}].provider"]`).value,
                 api_key: document.querySelector(`[name="debrid[${i}].api_key"]`).value,
                 rate_limit: document.querySelector(`[name="debrid[${i}].rate_limit"]`).value,
+                repair_rate_limit: document.querySelector(`[name="debrid[${i}].repair_rate_limit"]`).value,
+                download_rate_limit: document.querySelector(`[name="debrid[${i}].download_rate_limit"]`).value,
                 minimum_free_slot: parseInt(document.querySelector(`[name="debrid[${i}].minimum_free_slot"]`).value) || 0,
                 proxy: document.querySelector(`[name="debrid[${i}].proxy"]`).value,
                 download_uncached: document.querySelector(`[name="debrid[${i}].download_uncached"]`).checked,
@@ -1047,6 +1130,7 @@ class ConfigManager {
         return {
             enabled: document.querySelector('[name="repair.enabled"]').checked,
             interval: document.querySelector('[name="repair.interval"]').value,
+            repair_mode: document.querySelector('[name="repair.repair_mode"]').value,
             strategy: document.querySelector('[name="repair.strategy"]').value,
             workers: parseInt(document.querySelector('[name="repair.workers"]').value) || 1,
             auto_process: document.querySelector('[name="repair.auto_process"]').checked

@@ -164,6 +164,18 @@ func (m *Manager) GetBrokenFiles(entry *storage.TorrentEntry, filenames []string
 	return []string{}
 }
 
+func (m *Manager) FixTorrent(ctx context.Context, torrent *storage.Torrent) error {
+
+	result, err := m.fixer.FixTorrent(ctx, torrent, false)
+	if err != nil {
+		return err
+	}
+	if !result.Success {
+		return fmt.Errorf("fixing failed after %d attempts: %w", result.AttemptsCount, result.Error)
+	}
+	return nil
+}
+
 // MoveTorrent attempts to repair a torrent by moving it to a new debrid service
 func (m *Manager) MoveTorrent(ctx context.Context, torrent *storage.Torrent) error {
 

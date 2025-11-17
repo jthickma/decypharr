@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -28,9 +28,8 @@ type Manager struct {
 	ctx           context.Context
 	cancel        context.CancelFunc
 	serverReady   chan struct{}
-	serverStarted bool
-	mu            sync.RWMutex
-	mounts        map[string]*Mount
+	serverStarted atomic.Bool
+	mount         *Mount
 	manager       *manager.Manager
 
 	client *rclone.Client
@@ -79,31 +78,27 @@ func NewManager(manager *manager.Manager) *Manager {
 		serverReady: make(chan struct{}),
 		manager:     manager,
 	}
-	m.registerMounts()
+	m.registerMount()
 	return m
 }
 
-func (m *Manager) registerMounts() {
-	mounts := make(map[string]*Mount)
-	for mountName := range m.manager.MountPaths() {
-		mnt, err := NewMount(mountName, m.manager, m.client)
-		if err != nil {
-			m.logger.Error().Err(err).Msgf("Failed to create rclone mount for debrid: %s", mountName)
-			continue
-		}
-		mounts[mountName] = mnt
+func (m *Manager) registerMount() {
+	mountInfo := m.manager.FirstMountInfo()
+	if mountInfo == nil {
+		m.logger.Error().Msg("No mount info available to register rclone mount")
+		return
 	}
-	m.mu.Lock()
-	m.mounts = mounts
-	m.mu.Unlock()
+	mnt, err := NewMount(mountInfo.Name(), m.manager, m.client)
+	if err != nil {
+		m.logger.Error().Err(err).Msgf("Failed to create rclone mount for: %s", mountInfo.Name())
+		return
+	}
+	m.mount = mnt
 }
 
 // Start starts the rclone RC server
 func (m *Manager) Start(ctx context.Context) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	if m.serverStarted {
+	if m.serverStarted.Load() {
 		return nil
 	}
 
@@ -148,7 +143,7 @@ func (m *Manager) Start(ctx context.Context) error {
 	if err := m.cmd.Start(); err != nil {
 		return fmt.Errorf("failed to start rclone: %v stdout: %s stderr: %s", err, stdout.String(), stderr.String())
 	}
-	m.serverStarted = true
+	m.serverStarted.Store(true)
 
 	// Wait for server to be ready in a goroutine
 	go func() {
@@ -168,22 +163,14 @@ func (m *Manager) Start(ctx context.Context) error {
 			return
 		}
 
-		// Start all mounts
-		m.mu.RLock()
-		var wg sync.WaitGroup
-		for name, mount := range m.mounts {
-			wg.Add(1)
-			go func(name string, mount *Mount) {
-				defer wg.Done()
-				if err := mount.Start(m.ctx); err != nil {
-					m.logger.Error().Err(err).Msgf("Failed to mount rclone filesystem for debrid: %s", name)
-				} else {
-					m.logger.Info().Msgf("Successfully mounted rclone filesystem for debrid: %s", name)
-				}
-			}(name, mount)
+		// Start mount
+		if m.mount != nil {
+			if err := m.mount.Start(m.ctx); err != nil {
+				m.logger.Error().Err(err).Msgf("Failed to mount rclone filesystem")
+			} else {
+				m.logger.Info().Msgf("Successfully mounted rclone filesystem")
+			}
 		}
-		m.mu.RUnlock()
-		wg.Wait()
 
 		// Wait for command to finish and log output
 		err := m.cmd.Wait()
@@ -214,10 +201,7 @@ func (m *Manager) Start(ctx context.Context) error {
 
 // Stop stops the rclone RC server and unmounts all mounts
 func (m *Manager) Stop() error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	if !m.serverStarted {
+	if !m.serverStarted.Load() {
 		return nil
 	}
 
@@ -225,20 +209,14 @@ func (m *Manager) Stop() error {
 	// Cancel context and stop process
 	m.cancel()
 
-	// Stopping all mounts
-	var wg sync.WaitGroup
-	for name, mount := range m.mounts {
-		wg.Add(1)
-		go func(name string, mount *Mount) {
-			defer wg.Done()
-			if err := mount.Stop(); err != nil {
-				m.logger.Error().Err(err).Msgf("Failed to unmount rclone filesystem for debrid: %s", name)
-			} else {
-				m.logger.Info().Msgf("Successfully unmounted rclone filesystem for debrid: %s", name)
-			}
-		}(name, mount)
+	// Stopping mount
+	if m.mount != nil {
+		if err := m.mount.Stop(); err != nil {
+			m.logger.Error().Err(err).Msgf("Failed to unmount rclone filesystem")
+		} else {
+			m.logger.Info().Msgf("Successfully unmounted rclone filesystem")
+		}
 	}
-	wg.Wait()
 
 	if m.cmd != nil && m.cmd.Process != nil {
 		// Try graceful shutdown first
@@ -271,7 +249,7 @@ func (m *Manager) Stop() error {
 		}
 	}
 
-	m.serverStarted = false
+	m.serverStarted.Store(false)
 	m.logger.Info().Msg("Client RC server stopped")
 	return nil
 }

@@ -50,10 +50,13 @@ func (a *Account) GetDownloadLink(fileLink string) (types.DownloadLink, error) {
 	if !ok {
 		return types.DownloadLink{}, types.ErrDownloadLinkNotFound
 	}
+	if err := dl.Valid(); err != nil {
+		return types.DownloadLink{}, err
+	}
 	return dl, nil
 }
 
-func (a *Account) StoreDownloadLink(dl types.DownloadLink) {
+func (a *Account) storeLink(dl types.DownloadLink) {
 	slicedLink := a.sliceFileLink(dl.Link)
 	a.links.Store(slicedLink, dl)
 }
@@ -67,9 +70,10 @@ func (a *Account) ClearDownloadLinks() {
 func (a *Account) DownloadLinksCount() int {
 	return a.links.Size()
 }
+
 func (a *Account) StoreDownloadLinks(dls map[string]*types.DownloadLink) {
 	for _, dl := range dls {
-		a.StoreDownloadLink(*dl)
+		a.storeLink(*dl)
 	}
 }
 

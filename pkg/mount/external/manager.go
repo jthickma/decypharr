@@ -2,7 +2,6 @@ package external
 
 import (
 	"context"
-	"sync"
 
 	"github.com/rs/zerolog"
 	"github.com/sirrobot01/decypharr/internal/config"
@@ -12,8 +11,7 @@ import (
 )
 
 type Manager struct {
-	mu      sync.RWMutex
-	mounts  map[string]*Mount
+	mount   *Mount
 	manager *manager.Manager
 	client  *rclone.Client
 	logger  zerolog.Logger
@@ -30,28 +28,17 @@ func NewManager(manager *manager.Manager) *Manager {
 		cfg.Mount.ExternalRclone.RCPassword,
 		_logger,
 	)
+	mnt, err := NewMount(manager, rcloneClient)
+	if err != nil {
+		_logger.Error().Err(err).Msg("Failed to create external rclone mount")
+	}
 	m := &Manager{
 		manager: manager,
 		logger:  _logger,
 		client:  rcloneClient,
+		mount:   mnt,
 	}
-	m.registerMounts()
 	return m
-}
-
-func (m *Manager) registerMounts() {
-	mounts := make(map[string]*Mount)
-	for mountName := range m.manager.MountPaths() {
-		mnt, err := NewMount(mountName, m.manager)
-		if err != nil {
-			m.logger.Error().Err(err).Msgf("Failed to create FUSE mount for debrid: %s", mountName)
-			continue
-		}
-		mounts[mountName] = mnt
-	}
-	m.mu.Lock()
-	m.mounts = mounts
-	m.mu.Unlock()
 }
 
 func (m *Manager) Start(ctx context.Context) error {

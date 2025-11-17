@@ -54,9 +54,11 @@ type ContentResponse struct {
 }
 
 type RepairRequest struct {
-	ArrName     string   `json:"arr"`
-	MediaIds    []string `json:"mediaIds"`
-	AutoProcess bool     `json:"autoProcess"`
+	ArrName       string   `json:"arr"`
+	MediaIds      []string `json:"mediaIds"`
+	AutoProcess   bool     `json:"autoProcess"`
+	Mode          string   `json:"mode"`          // "arr" or "all"
+	TorrentFilter string   `json:"torrentFilter"` // Optional filter for torrent name/infohash in "all" mode
 }
 
 type Server struct {

@@ -19,20 +19,22 @@ import (
 	"github.com/sirrobot01/decypharr/pkg/arr"
 	debrid "github.com/sirrobot01/decypharr/pkg/debrid/common"
 	"github.com/sirrobot01/decypharr/pkg/storage"
+	"github.com/sirrobot01/decypharr/pkg/version"
 	"golang.org/x/sync/singleflight"
 )
 
 // Manager handles unified torrent management - replaces wire.Store completely
 type Manager struct {
-	storage     *storage.Storage
-	migrator    *Migrator
-	clients     *xsync.Map[string, debrid.Client]
-	arr         *arr.Storage
-	logger      zerolog.Logger
-	ready       chan struct{}
-	readyOnce   sync.Once
-	mountPaths  map[string]*FileInfo
-	firstDebrid string
+	storage      *storage.Storage
+	migrator     *Migrator
+	clients      *xsync.Map[string, debrid.Client]
+	arr          *arr.Storage
+	logger       zerolog.Logger
+	ready        chan struct{}
+	readyOnce    sync.Once
+	mountPaths   map[string]*FileInfo
+	firstDebrid  string
+	streamClient *http.Client
 
 	// Migration jobs tracking
 	migrationJobs   *xsync.Map[string, *storage.SwitcherJob]
@@ -64,7 +66,7 @@ type Manager struct {
 
 	startTime time.Time
 
-	events *xsync.Map[string, *EventHandler]
+	event *EventHandler
 
 	rootInfo   *FileInfo
 	entry      *EntryCache
@@ -131,7 +133,7 @@ func New() *Manager {
 		ReadBufferSize:  256 * 1024, // 256KB read buffer (faster downloads)
 	}
 
-	_ = &http.Client{
+	streamClient := &http.Client{
 		Timeout:   0, // No timeout for streaming
 		Transport: transport,
 	}
@@ -150,7 +152,7 @@ func New() *Manager {
 		torrentErrorCounters: xsync.NewMap[string, atomic.Int32](),
 		ctx:                  ctx,
 		ready:                make(chan struct{}),
-		events:               xsync.NewMap[string, *EventHandler](),
+		streamClient:         streamClient,
 	}
 
 	instance.init()
@@ -290,7 +292,11 @@ func (m *Manager) sync(ctx context.Context) error {
 // Start starts the manager and all its components
 func (m *Manager) Start(ctx context.Context) error {
 	m.startTime = time.Now()
-	m.logger.Info().Msg("Starting manager")
+	m.logger.Info().
+		Str("version", version.GetInfo().String()).
+		Str("mount_type", string(m.config.Mount.Type)).
+		Str("mount_path", m.config.Mount.MountPath).
+		Msg("Starting manager")
 
 	// run the migration process
 	m.migrate()

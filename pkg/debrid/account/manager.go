@@ -14,15 +14,14 @@ import (
 	"go.uber.org/ratelimit"
 )
 
-const (
-	MaxDisableCount = 3
-)
+type LinkFetcher func(id string, file *types.File) (types.DownloadLink, error)
 
 type Manager struct {
-	debrid   string
-	current  atomic.Pointer[Account]
-	accounts *xsync.Map[string, *Account]
-	logger   zerolog.Logger
+	debrid      string
+	current     atomic.Pointer[Account]
+	accounts    *xsync.Map[string, *Account]
+	linkFetcher LinkFetcher
+	logger      zerolog.Logger
 }
 
 func NewManager(debridConf config.Debrid, downloadRL ratelimit.Limiter, logger zerolog.Logger) *Manager {
@@ -66,6 +65,10 @@ func NewManager(debridConf config.Debrid, downloadRL ratelimit.Limiter, logger z
 	}
 	m.current.Store(firstAccount)
 	return m
+}
+
+func (m *Manager) SetLinkFetcher(fetcher LinkFetcher) {
+	m.linkFetcher = fetcher
 }
 
 func (m *Manager) Active() []*Account {
@@ -170,22 +173,20 @@ func (m *Manager) GetAccount(token string) (*Account, error) {
 	return acc, nil
 }
 
-func (m *Manager) GetDownloadLink(fileLink string) (types.DownloadLink, error) {
+func (m *Manager) GetDownloadLink(id string, file *types.File) (types.DownloadLink, error) {
 	current := m.Current()
 	if current == nil {
-		return types.DownloadLink{}, fmt.Errorf("no active account for debrid service %s", m.debrid)
+		return types.DownloadLink{}, fmt.Errorf("no active account for debrid %s", m.debrid)
 	}
-	return current.GetDownloadLink(fileLink)
-}
-
-func (m *Manager) GetAccountFromDownloadLink(downloadLink types.DownloadLink) (*Account, error) {
-	if downloadLink.Link == "" {
-		return nil, fmt.Errorf("cannot get account from empty download link")
+	dl, err := current.GetDownloadLink(file.Link)
+	if err != nil {
+		dl, err = m.linkFetcher(id, file)
+		if err != nil {
+			return types.DownloadLink{}, err
+		}
+		current.storeLink(dl)
 	}
-	if downloadLink.Token == "" {
-		return nil, fmt.Errorf("cannot get account from download link without token")
-	}
-	return m.GetAccount(downloadLink.Token)
+	return dl, nil
 }
 
 func (m *Manager) StoreDownloadLink(downloadLink types.DownloadLink) {
@@ -196,7 +197,7 @@ func (m *Manager) StoreDownloadLink(downloadLink types.DownloadLink) {
 	if err != nil || account == nil {
 		return
 	}
-	account.StoreDownloadLink(downloadLink)
+	account.storeLink(downloadLink)
 }
 
 func (m *Manager) Stats() []map[string]any {

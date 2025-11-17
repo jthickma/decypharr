@@ -36,8 +36,8 @@ type BrowseResponse struct {
 	ParentDir  string        `json:"parent_dir,omitempty"`
 }
 
-// handleBrowseRoot returns the root mount points
-func (s *Server) handleBrowseRoot(w http.ResponseWriter, r *http.Request) {
+// handleBrowseMount returns subdirectories under a mount (__all__, __bad__, etc.)
+func (s *Server) handleBrowseMount(w http.ResponseWriter, r *http.Request) {
 	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
 	if page < 1 {
 		page = 1
@@ -48,7 +48,7 @@ func (s *Server) handleBrowseRoot(w http.ResponseWriter, r *http.Request) {
 		limit = 50
 	}
 
-	children := s.manager.RootEntryChildren()
+	children := s.manager.GetEntries()
 
 	// Convert to browse entries
 	entries := make([]BrowseEntry, 0, len(children))
@@ -89,70 +89,8 @@ func (s *Server) handleBrowseRoot(w http.ResponseWriter, r *http.Request) {
 	}, http.StatusOK)
 }
 
-// handleBrowseMount returns subdirectories under a mount (__all__, __bad__, etc.)
-func (s *Server) handleBrowseMount(w http.ResponseWriter, r *http.Request) {
-	mount := chi.URLParam(r, "mount")
-	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
-	if page < 1 {
-		page = 1
-	}
-
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	if limit < 1 || limit > 100 {
-		limit = 50
-	}
-
-	currentInfo := s.manager.GetMountInfo(mount)
-	if currentInfo == nil {
-		http.Error(w, "Mount not found", http.StatusNotFound)
-		return
-	}
-
-	children := s.manager.GetEntries()
-
-	// Convert to browse entries
-	entries := make([]BrowseEntry, 0, len(children))
-	for _, child := range children {
-		entries = append(entries, BrowseEntry{
-			Name:         child.Name(),
-			Path:         "/" + mount + "/" + child.Name(),
-			Size:         child.Size(),
-			ModTime:      child.ModTime().Format("2006-01-02 15:04:05"),
-			IsDir:        child.IsDir(),
-			ActiveDebrid: child.ActiveDebrid(),
-		})
-	}
-
-	// Apply pagination
-	total := len(entries)
-	totalPages := (total + limit - 1) / limit
-	offset := (page - 1) * limit
-
-	var paginatedEntries []BrowseEntry
-	if offset < total {
-		end := offset + limit
-		if end > total {
-			end = total
-		}
-		paginatedEntries = entries[offset:end]
-	} else {
-		paginatedEntries = []BrowseEntry{}
-	}
-
-	utils.JSONResponse(w, BrowseResponse{
-		Entries:    paginatedEntries,
-		Total:      total,
-		Page:       page,
-		Limit:      limit,
-		TotalPages: totalPages,
-		CurrentDir: "/" + mount,
-		ParentDir:  "/",
-	}, http.StatusOK)
-}
-
 // handleBrowseGroup returns torrents in a group (__all__, __bad__, custom folder)
 func (s *Server) handleBrowseGroup(w http.ResponseWriter, r *http.Request) {
-	mount := chi.URLParam(r, "mount")
 	group := utils.PathUnescape(chi.URLParam(r, "group"))
 
 	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
@@ -190,7 +128,7 @@ func (s *Server) handleBrowseGroup(w http.ResponseWriter, r *http.Request) {
 
 		entries = append(entries, BrowseEntry{
 			Name:         child.Name(),
-			Path:         "/" + mount + "/" + group + "/" + child.Name(),
+			Path:         "/" + group + "/" + child.Name(),
 			Size:         child.Size(),
 			ModTime:      child.ModTime().Format("2006-01-02 15:04:05"),
 			IsDir:        child.IsDir(),
@@ -222,14 +160,13 @@ func (s *Server) handleBrowseGroup(w http.ResponseWriter, r *http.Request) {
 		Page:       page,
 		Limit:      limit,
 		TotalPages: totalPages,
-		CurrentDir: "/" + mount + "/" + group,
-		ParentDir:  "/" + mount,
+		CurrentDir: "/" + group,
+		ParentDir:  "/",
 	}, http.StatusOK)
 }
 
 // handleBrowseTorrentFiles returns files in a torrent folder
 func (s *Server) handleBrowseTorrentFiles(w http.ResponseWriter, r *http.Request) {
-	mount := chi.URLParam(r, "mount")
 	group := utils.PathUnescape(chi.URLParam(r, "group"))
 	torrent := utils.PathUnescape(chi.URLParam(r, "torrent"))
 
@@ -259,7 +196,7 @@ func (s *Server) handleBrowseTorrentFiles(w http.ResponseWriter, r *http.Request
 			continue
 		}
 
-		pathParts := []string{"/", mount, group}
+		pathParts := []string{"/", group}
 		pathParts = append(pathParts, torrent, child.Name())
 
 		entries = append(entries, BrowseEntry{
@@ -288,7 +225,7 @@ func (s *Server) handleBrowseTorrentFiles(w http.ResponseWriter, r *http.Request
 		paginatedEntries = []BrowseEntry{}
 	}
 
-	parentPath := "/" + mount + "/" + group
+	parentPath := "/" + group
 
 	currentPath := parentPath + "/" + torrent
 

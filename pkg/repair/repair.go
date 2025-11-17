@@ -278,53 +278,23 @@ func (r *Repair) repair(ctx context.Context, job *storage.Job) error {
 	// Initialize the run
 	r.initRun(ctx)
 
-	// Use a mutex to protect concurrent access to brokenItems
-	var mu sync.Mutex
-	brokenItems := map[string][]arr.ContentFile{}
-	g, ctx := errgroup.WithContext(ctx)
+	cfg := config.Get()
+	repairMode := cfg.Repair.Mode
 
-	for _, a := range job.Arrs {
-		a := a // Capture range variable
-		g.Go(func() error {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			default:
-			}
-			var items []arr.ContentFile
-			var err error
+	// Determine which repair mode to use
+	var err error
+	var brokenItems map[string][]arr.ContentFile
 
-			if len(job.MediaIDs) == 0 {
-				items, err = r.repairArr(ctx, job, a, "")
-				if err != nil {
-					r.logger.Error().Err(err).Msgf("Error repairing %s", a)
-					return err
-				}
-			} else {
-				for _, id := range job.MediaIDs {
-					someItems, err := r.repairArr(ctx, job, a, id)
-					if err != nil {
-						r.logger.Error().Err(err).Msgf("Error repairing %s with ID %s", a, id)
-						return err
-					}
-					items = append(items, someItems...)
-				}
-			}
-
-			// Safely append the found items to the shared slice
-			if len(items) > 0 {
-				mu.Lock()
-				brokenItems[a] = items
-				mu.Unlock()
-			}
-
-			return nil
-		})
+	if repairMode == config.RepairModeAll {
+		// Repair all torrents
+		brokenItems, err = r.repairAll(ctx, job)
+	} else {
+		// Default arr mode - repair based on Arr services
+		brokenItems, err = r.repairArrMode(ctx, job)
 	}
 
-	// Wait for all goroutines to complete and check for errors
-	if err := g.Wait(); err != nil {
-		// Check if j0b was canceled
+	if err != nil {
+		// Check if job was canceled
 		if errors.Is(ctx.Err(), context.Canceled) {
 			job.Status = storage.JobCancelled
 			job.CompletedAt = time.Now()
@@ -376,6 +346,157 @@ func (r *Repair) repair(ctx context.Context, job *storage.Job) error {
 		}()
 	}
 	return nil
+}
+
+// repairArrMode repairs based on Arr services (the original repair logic)
+func (r *Repair) repairArrMode(ctx context.Context, job *storage.Job) (map[string][]arr.ContentFile, error) {
+	// Use a mutex to protect concurrent access to brokenItems
+	var mu sync.Mutex
+	brokenItems := map[string][]arr.ContentFile{}
+	g, ctx := errgroup.WithContext(ctx)
+
+	for _, a := range job.Arrs {
+		a := a // Capture range variable
+		g.Go(func() error {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
+			var items []arr.ContentFile
+			var err error
+
+			if len(job.MediaIDs) == 0 {
+				items, err = r.repairArr(ctx, job, a, "")
+				if err != nil {
+					r.logger.Error().Err(err).Msgf("Error repairing %s", a)
+					return err
+				}
+			} else {
+				for _, id := range job.MediaIDs {
+					someItems, err := r.repairArr(ctx, job, a, id)
+					if err != nil {
+						r.logger.Error().Err(err).Msgf("Error repairing %s with ID %s", a, id)
+						return err
+					}
+					items = append(items, someItems...)
+				}
+			}
+
+			// Safely append the found items to the shared slice
+			if len(items) > 0 {
+				mu.Lock()
+				brokenItems[a] = items
+				mu.Unlock()
+			}
+
+			return nil
+		})
+	}
+
+	// Wait for all goroutines to complete and check for errors
+	if err := g.Wait(); err != nil {
+		return nil, err
+	}
+
+	return brokenItems, nil
+}
+
+// repairAll repairs all torrents in the system by checking them via ForEachBatch
+func (r *Repair) repairAll(ctx context.Context, job *storage.Job) (map[string][]arr.ContentFile, error) {
+	r.logger.Info().Msg("Starting repair all torrents mode")
+
+	// Use a sync map to safely track broken torrents
+	brokenTorrents := &sync.Map{}
+	batchSize := 100
+
+	// Process torrents in batches
+	err := r.manager.Storage().ForEachBatch(batchSize, func(batch []*storage.Torrent) error {
+		// Use error group to process batch concurrently
+		g, batchCtx := errgroup.WithContext(ctx)
+		g.SetLimit(r.workers)
+
+		for _, torrent := range batch {
+			torrent := torrent // Capture range variable
+
+			g.Go(func() error {
+				select {
+				case <-batchCtx.Done():
+					return batchCtx.Err()
+				default:
+				}
+
+				// Get the torrent entry
+				entry, err := r.manager.GetEntry(torrent.Name)
+				if err != nil {
+					r.logger.Debug().Err(err).Str("torrent", torrent.Name).Msg("Failed to get torrent entry, skipping")
+					return nil // Skip this torrent, don't fail the whole batch
+				}
+
+				// Check if torrent has broken files
+				brokenFilePaths := r.manager.GetBrokenFiles(entry, []string{})
+				if len(brokenFilePaths) > 0 {
+					r.logger.Info().
+						Str("torrent", torrent.Name).
+						Int("broken_files", len(brokenFilePaths)).
+						Msg("Found broken files in torrent")
+
+					// Store broken torrent info
+					// We'll use torrent name as key since we don't have Arr context in "all" mode
+					brokenTorrents.Store(torrent.InfoHash, &torrentRepairInfo{
+						Torrent:         torrent,
+						BrokenFilePaths: brokenFilePaths,
+					})
+
+					// If auto-process is enabled, try to fix immediately
+					if job.AutoProcess {
+						if err := r.manager.FixTorrent(batchCtx, torrent); err != nil {
+							r.logger.Error().Err(err).Str("torrent", torrent.Name).Msg("Failed to fix torrent")
+						} else {
+							r.logger.Info().Str("torrent", torrent.Name).Msg("Successfully fixed torrent")
+						}
+					}
+				}
+
+				return nil
+			})
+		}
+
+		return g.Wait()
+	})
+
+	if err != nil {
+		return nil, fmt.Errorf("error processing torrent batches: %w", err)
+	}
+
+	// Convert broken torrents to the expected format
+	// Since we don't have Arr context in "all" mode, we'll use a generic key
+	brokenItems := map[string][]arr.ContentFile{}
+	allBrokenFiles := make([]arr.ContentFile, 0)
+
+	brokenTorrents.Range(func(key, value interface{}) bool {
+		info := value.(*torrentRepairInfo)
+		for _, filepath := range info.BrokenFilePaths {
+			allBrokenFiles = append(allBrokenFiles, arr.ContentFile{
+				Path:       filepath,
+				TargetPath: filepath,
+			})
+		}
+		return true
+	})
+
+	if len(allBrokenFiles) > 0 {
+		brokenItems["all-torrents"] = allBrokenFiles
+	}
+
+	r.logger.Info().Int("broken_files", len(allBrokenFiles)).Msg("Repair all torrents completed")
+	return brokenItems, nil
+}
+
+// torrentRepairInfo holds information about a broken torrent
+type torrentRepairInfo struct {
+	Torrent         *storage.Torrent
+	BrokenFilePaths []string
 }
 
 func (r *Repair) repairArr(ctx context.Context, job *storage.Job, _arr string, tmdbId string) ([]arr.ContentFile, error) {
