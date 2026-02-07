@@ -139,6 +139,7 @@ func (f *Fixer) FixTorrent(ctx context.Context, entry *storage.Entry, skipCurren
 		if success {
 			f.manager.logger.Info().
 				Str("debrid", debridName).
+				Str("name", entry.Name).
 				Str("infohash", entry.InfoHash).
 				Msg("Successfully re-inserted entry")
 

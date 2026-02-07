@@ -184,9 +184,18 @@ func (sf *SegmentFetcher) doFetch(ctx context.Context, segIdx int) error {
 				}
 
 				// Stream body directly to disk
-				_, err := conn.StreamBody(messageID, writer)
+				n, err := conn.StreamBody(messageID, writer)
 				if err != nil {
 					return err
+				}
+
+				// Treat zero-byte articles as missing — the article exists on the
+				// server but its body is empty/corrupted after yEnc decoding.
+				if n == 0 {
+					return &nntp.Error{
+						Type:    nntp.ErrorTypeArticleNotFound,
+						Message: "article produced no data after decoding",
+					}
 				}
 
 				// Finalize the write (updates cache state)

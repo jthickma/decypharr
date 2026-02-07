@@ -96,50 +96,51 @@ func (r *RateLimitedLogger) shouldLog(key string) bool {
 }
 
 // RateLimitedEvent provides a fluent API for rate-limited logging.
-// If suppressed, returns a no-op logger that discards all output.
+// It holds a reference to the parent logger and key, evaluating the rate limit
+// on each log call rather than at creation time.
 type RateLimitedEvent struct {
-	logger    zerolog.Logger
-	shouldLog bool
+	parent *RateLimitedLogger
+	key    string
 }
 
 // Rate returns a RateLimitedEvent for fluent logging with deduplication.
-// Usage: logger.Rate(key).Error().err(err).Msg("message")
-// If rate-limited, the log is silently discarded (no nil check needed).
+// Usage: logger.Rate(key).Error().Err(err).Msg("message")
+// The rate limit is checked on each Error/Warn/Info/Debug call, not at creation.
 func (r *RateLimitedLogger) Rate(key string) *RateLimitedEvent {
 	return &RateLimitedEvent{
-		logger:    r.logger,
-		shouldLog: r.shouldLog(key),
+		parent: r,
+		key:    key,
 	}
 }
 
 // Error returns an error event, or a no-op event if rate-limited.
 func (e *RateLimitedEvent) Error() *zerolog.Event {
-	if e.shouldLog {
-		return e.logger.Error()
+	if e.parent.shouldLog(e.key) {
+		return e.parent.logger.Error()
 	}
 	return nopLogger.Error()
 }
 
 // Warn returns a warning event, or a no-op event if rate-limited.
 func (e *RateLimitedEvent) Warn() *zerolog.Event {
-	if e.shouldLog {
-		return e.logger.Warn()
+	if e.parent.shouldLog(e.key) {
+		return e.parent.logger.Warn()
 	}
 	return nopLogger.Warn()
 }
 
 // Info returns an info event, or a no-op event if rate-limited.
 func (e *RateLimitedEvent) Info() *zerolog.Event {
-	if e.shouldLog {
-		return e.logger.Info()
+	if e.parent.shouldLog(e.key) {
+		return e.parent.logger.Info()
 	}
 	return nopLogger.Info()
 }
 
 // Debug returns a debug event, or a no-op event if rate-limited.
 func (e *RateLimitedEvent) Debug() *zerolog.Event {
-	if e.shouldLog {
-		return e.logger.Debug()
+	if e.parent.shouldLog(e.key) {
+		return e.parent.logger.Debug()
 	}
 	return nopLogger.Debug()
 }

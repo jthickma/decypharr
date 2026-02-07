@@ -257,9 +257,10 @@ func (sr *StreamingReader) readFromCache(p []byte, off int64, startSeg, endSeg i
 		segDataOffset := readStart - segStart
 		copyLen := readEnd - readStart
 
-		// Defensive bounds check
+		// Bounds check — empty segment data means the article was corrupted
 		if segDataOffset < 0 || segDataOffset >= int64(len(data)) {
-			continue
+			return totalRead, fmt.Errorf("segment %d has no data (expected %d bytes at offset %d)",
+				segIdx, segEnd-segStart, segStart)
 		}
 		availableInSeg := int64(len(data)) - segDataOffset
 		if copyLen > availableInSeg {

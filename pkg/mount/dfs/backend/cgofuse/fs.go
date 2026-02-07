@@ -139,7 +139,7 @@ func (f *FS) Readdir(path string, fill func(name string, stat *fuse.Stat_t, ofst
 		// Root directory - list all torrents/entries
 		entries := f.manager.GetEntries()
 		for _, entry := range entries {
-			fill(entry.Name(), nil, 0)
+			fill(entry.Name(), f.entryStat(&entry), 0)
 		}
 		return 0
 	}
@@ -160,7 +160,7 @@ func (f *FS) Readdir(path string, fill func(name string, stat *fuse.Stat_t, ofst
 			_, children = f.manager.GetTorrentChildren(groupOrTorrent)
 		}
 		for _, child := range children {
-			fill(child.Name(), nil, 0)
+			fill(child.Name(), f.entryStat(&child), 0)
 		}
 		return 0
 	}
@@ -172,10 +172,37 @@ func (f *FS) Readdir(path string, fill func(name string, stat *fuse.Stat_t, ofst
 	// get the torrent's children (files)
 	_, children := f.manager.GetTorrentChildren(torrentName)
 	for _, child := range children {
-		fill(child.Name(), nil, 0)
+		fill(child.Name(), f.entryStat(&child), 0)
 	}
 
 	return 0
+}
+
+// entryStat creates a fuse.Stat_t for a FileInfo entry
+// This is used by Readdir to provide file type information to clients like Samba
+func (f *FS) entryStat(info *manager.FileInfo) *fuse.Stat_t {
+	stat := &fuse.Stat_t{
+		Uid:     f.config.UID,
+		Gid:     f.config.GID,
+		Blksize: 4096,
+	}
+
+	modTime := info.ModTime()
+	stat.Atim = fuse.NewTimespec(modTime)
+	stat.Mtim = fuse.NewTimespec(modTime)
+	stat.Ctim = fuse.NewTimespec(modTime)
+
+	if info.IsDir() {
+		stat.Mode = fuse.S_IFDIR | 0755
+		stat.Nlink = 2
+	} else {
+		stat.Mode = fuse.S_IFREG | 0644
+		stat.Nlink = 1
+		stat.Size = info.Size()
+		stat.Blocks = (stat.Size + 511) / 512
+	}
+
+	return stat
 }
 
 // Open opens a file

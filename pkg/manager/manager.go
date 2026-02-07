@@ -444,7 +444,7 @@ func (m *Manager) Stop() error {
 		m.repair.Stop()
 	}
 
-	// Close storage (releases bbolt file lock)
+	// Close storage
 	if m.storage != nil {
 		m.logger.Info().Msg("Closing storage database")
 		if err := m.storage.Close(); err != nil {
