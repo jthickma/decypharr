@@ -175,14 +175,18 @@ func (p *RARParser) Process(ctx context.Context, group *FileGroup, password stri
 	volumeOffsetMap := buildVolumeOffsetMap(volumeInfos)
 
 	files := make([]*storage.NZBFile, 0, len(archiveInfo.Files))
+	hasNoneStored := false
 
 	// Parse each file in the RAR archive
 	for _, rarFile := range archiveInfo.Files {
 		if rarFile.IsDirectory {
 			continue
 		}
-		// Allow non-stored files as they might work with some clients/mounts
-		// or be intended for download only.
+		// Only process stored (uncompressed) files for streaming
+		if !rarFile.IsStored {
+			hasNoneStored = true
+			continue
+		}
 
 		name := utils.RemoveInvalidChars(path.Base(rarFile.Name))
 		if name == "" {
@@ -233,7 +237,10 @@ func (p *RARParser) Process(ctx context.Context, group *FileGroup, password stri
 	}
 
 	if len(files) == 0 {
-		return nil, fmt.Errorf("no valid NZB files could be built from RAR archive")
+		if hasNoneStored {
+			return nil, fmt.Errorf("RAR archive contains no stored (uncompressed) files; cannot stream")
+		}
+		return nil, fmt.Errorf("no valid files found in RAR archive")
 	}
 
 	p.logger.Info().
