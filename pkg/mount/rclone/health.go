@@ -7,7 +7,7 @@ import (
 )
 
 // RecoverMount attempts to recover a failed mount
-func (m *Mount) RecoverMount() error {
+func (m *Manager) RecoverMount() error {
 	mountInfo := m.getMountInfo()
 
 	if mountInfo == nil {
@@ -32,7 +32,7 @@ func (m *Mount) RecoverMount() error {
 }
 
 // MonitorMounts continuously monitors mount health and attempts recovery
-func (m *Mount) MonitorMounts(ctx context.Context) {
+func (m *Manager) MonitorMounts(ctx context.Context) {
 	ticker := time.NewTicker(30 * time.Second) // Check every 30 seconds
 	defer ticker.Stop()
 
@@ -48,7 +48,7 @@ func (m *Mount) MonitorMounts(ctx context.Context) {
 }
 
 // performMountHealthCheck checks and attempts to recover unhealthy mounts
-func (m *Mount) performMountHealthCheck() {
+func (m *Manager) performMountHealthCheck() {
 	if err := m.client.CheckMountHealth(context.Background(), FSName); err != nil {
 		m.logger.Warn().Err(err).Msg("Mount health check failed, attempting recovery")
 

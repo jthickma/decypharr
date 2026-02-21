@@ -1,4 +1,4 @@
-//go:build !windows
+//go:build linux || (darwin && amd64)
 
 package hanwen
 
@@ -31,7 +31,6 @@ type Dir struct {
 	config  *config.FuseConfig
 	logger  zerolog.Logger
 	modTime uint64
-	manager *manager.Manager
 }
 
 var _ = (fs.NodeLookuper)((*Dir)(nil))
@@ -41,7 +40,7 @@ var _ = (fs.NodeUnlinker)((*Dir)(nil))
 var _ = (fs.NodeRmdirer)((*Dir)(nil))
 
 // NewDir creates a new directory
-func NewDir(vfsManager *vfs.Manager, manager *manager.Manager, name string, level DirLevel, modTime uint64, config *config.FuseConfig, logger zerolog.Logger) *Dir {
+func NewDir(vfsManager *vfs.Manager, name string, level DirLevel, modTime uint64, config *config.FuseConfig, logger zerolog.Logger) *Dir {
 	return &Dir{
 		vfs:     vfsManager,
 		name:    name,
@@ -49,7 +48,6 @@ func NewDir(vfsManager *vfs.Manager, manager *manager.Manager, name string, leve
 		config:  config,
 		logger:  logger.With().Str("dir", name).Logger(),
 		modTime: modTime,
-		manager: manager,
 	}
 }
 
@@ -62,7 +60,7 @@ func (d *Dir) newNode(info *manager.FileInfo) fs.InodeEmbedder {
 
 	var node fs.InodeEmbedder
 	if info.IsDir() {
-		node = NewDir(d.vfs, d.manager, info.Name(), d.level+1, uint64(info.ModTime().Unix()), d.config, d.logger)
+		node = NewDir(d.vfs, info.Name(), d.level+1, uint64(info.ModTime().Unix()), d.config, d.logger)
 	} else {
 		node = NewFile(d.vfs, d.config, info, d.logger)
 	}
@@ -109,7 +107,7 @@ func (d *Dir) lookupChild(name string) (*manager.FileInfo, syscall.Errno) {
 	case LevelRoot:
 		// Root level: small static list (~6 entries), O(n) is acceptable
 		// These are __all__, __bad__, torrents, nzbs, custom folders, version.txt
-		entries := d.manager.GetEntries()
+		entries := d.vfs.GetManager().GetEntries()
 		for i := range entries {
 			if entries[i].Name() == name {
 				return &entries[i], 0
@@ -119,7 +117,7 @@ func (d *Dir) lookupChild(name string) (*manager.FileInfo, syscall.Errno) {
 
 	case LevelTorrent:
 		// Torrent level: O(1) lookup by name
-		info, err := d.manager.GetEntryInfo(name)
+		info, err := d.vfs.GetManager().GetEntryInfo(name)
 		if err != nil {
 			return nil, syscall.ENOENT
 		}
@@ -127,7 +125,7 @@ func (d *Dir) lookupChild(name string) (*manager.FileInfo, syscall.Errno) {
 
 	case LevelFile:
 		// File level: O(1) lookup specific file in torrent
-		info, err := d.manager.GetTorrentFile(d.name, name)
+		info, err := d.vfs.GetManager().GetTorrentFile(d.name, name)
 		if err != nil {
 			return nil, syscall.ENOENT
 		}
@@ -185,17 +183,17 @@ func (d *Dir) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
 func (d *Dir) listChildren() ([]manager.FileInfo, syscall.Errno) {
 	switch d.level {
 	case LevelRoot:
-		return d.manager.GetEntries(), 0
+		return d.vfs.GetManager().GetEntries(), 0
 
 	case LevelTorrent:
-		_, children := d.manager.GetEntryChildren(d.name)
+		_, children := d.vfs.GetManager().GetEntryChildren(d.name)
 		if children == nil {
 			return nil, 0
 		}
 		return children, 0
 
 	case LevelFile:
-		_, children := d.manager.GetTorrentChildren(d.name)
+		_, children := d.vfs.GetManager().GetTorrentChildren(d.name)
 		if children == nil {
 			return nil, 0
 		}
@@ -241,12 +239,12 @@ func (d *Dir) Unlink(ctx context.Context, name string) syscall.Errno {
 		return syscall.EPERM
 	}
 
-	info, err := d.manager.GetTorrentFile(d.name, name)
+	info, err := d.vfs.GetManager().GetTorrentFile(d.name, name)
 	if err != nil {
 		return syscall.ENOENT
 	}
 
-	if err := d.manager.RemoveEntry(info); err != nil {
+	if err := d.vfs.GetManager().RemoveEntry(info); err != nil {
 		d.logger.Error().Err(err).Str("file", info.Name()).Msg("Failed to remove file from source")
 		return syscall.EIO
 	}
@@ -260,12 +258,12 @@ func (d *Dir) Rmdir(ctx context.Context, name string) syscall.Errno {
 		return syscall.EPERM
 	}
 
-	info, err := d.manager.GetTorrentEntry(name)
+	info, err := d.vfs.GetManager().GetTorrentEntry(name)
 	if err != nil {
 		return syscall.ENOENT
 	}
 
-	if err := d.manager.RemoveEntry(info); err != nil {
+	if err := d.vfs.GetManager().RemoveEntry(info); err != nil {
 		d.logger.Error().Err(err).Str("torrent", name).Msg("Failed to remove torrent from source")
 		return syscall.EIO
 	}

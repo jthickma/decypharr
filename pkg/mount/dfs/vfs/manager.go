@@ -63,6 +63,11 @@ func NewManager(ctx context.Context, mgr *manager.Manager, config *config.FuseCo
 	return m, nil
 }
 
+
+func (m *Manager) GetManager() *manager.Manager {
+	return m.manager
+}
+
 // GetFile returns a streaming file handle
 func (m *Manager) GetFile(info *manager.FileInfo) (*StreamingFile, error) {
 	key := buildFileKey(info.Parent(), info.Name())

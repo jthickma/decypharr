@@ -11,51 +11,55 @@ import (
 	"github.com/sirrobot01/decypharr/internal/logger"
 	"github.com/sirrobot01/decypharr/pkg/mount/dfs/backend"
 	"github.com/sirrobot01/decypharr/pkg/mount/dfs/config"
+	"github.com/sirrobot01/decypharr/pkg/mount/dfs/vfs"
 	"github.com/winfsp/cgofuse/fuse"
 )
 
 func init() {
-	backend.Register(backend.Cgo, NewBackend)
+	backend.Register(backend.Cgo, func(vfs *vfs.Manager, config *config.FuseConfig) (backend.Backend, error) {
+		return NewBackend(vfs, config)
+	})
 }
 
 // Backend implements the cgofuse backend for cross-platform FUSE support
 type Backend struct {
-	config   *config.FuseConfig
-	logger   zerolog.Logger
-	host     *fuse.FileSystemHost
-	fs       *FS
-	ready    atomic.Bool
-	rootNode backend.RootNode
+	config *config.FuseConfig
+	logger zerolog.Logger
+	host   *fuse.FileSystemHost
+	ready  atomic.Bool
+	root   *FS
+	vfs    *vfs.Manager
 }
 
 // NewBackend creates a new cgofuse backend
-func NewBackend(config *config.FuseConfig) (backend.Backend, error) {
+func NewBackend(vfs *vfs.Manager, config *config.FuseConfig) (backend.Backend, error) {
+	log := logger.New("cgofuse")
 	return &Backend{
 		config: config,
-		logger: logger.New("cgofuse"),
+		logger: log,
+		root:   NewFS(vfs, config, log),
+		vfs:    vfs,
 	}, nil
 }
 
 // Mount mounts the filesystem using cgofuse
-func (b *Backend) Mount(ctx context.Context, root backend.RootNode) error {
-	b.rootNode = root
-
+func (b *Backend) Mount(ctx context.Context) error {
 	// Create mount point if it doesn't exist (skip on Windows)
 	if runtime.GOOS != "windows" {
 		_ = os.MkdirAll(b.config.MountPath, 0755)
 	}
-
-	// get the cgofuse-specific filesystem
-	fs, ok := root.GetRootDir().(*FS)
-	if !ok {
-		return fmt.Errorf("root node must be cgofuse FS type, got: %T", root.GetRootDir())
+	if b.root == nil {
+		return fmt.Errorf("root node is not initialized")
 	}
-	b.fs = fs
+
+	if b.vfs == nil {
+		return fmt.Errorf("VFS manager is not initialized")
+	}
 
 	// Create filesystem host
-	b.host = fuse.NewFileSystemHost(fs)
-	b.host.SetCapReaddirPlus(true)      // Enable ReaddirPlus (used by WinFsp on Windows)
-	b.host.SetCapCaseInsensitive(true)   // Windows is case-insensitive
+	b.host = fuse.NewFileSystemHost(b.root)
+	b.host.SetCapReaddirPlus(true)     // Enable ReaddirPlus (used by WinFsp on Windows)
+	b.host.SetCapCaseInsensitive(true) // Windows is case-insensitive
 
 	// Build mount options
 	var options []string
@@ -131,8 +135,8 @@ func (b *Backend) Unmount(ctx context.Context) error {
 	}
 
 	// Close VFS manager
-	if b.rootNode != nil && b.rootNode.GetVFS() != nil {
-		if err := b.rootNode.GetVFS().Close(); err != nil {
+	if b.vfs != nil {
+		if err := b.vfs.Close(); err != nil {
 			b.logger.Warn().Err(err).Msg("Failed to close VFS")
 		}
 	}
@@ -159,4 +163,7 @@ func (b *Backend) IsReady() bool {
 // Type returns the backend type
 func (b *Backend) Type() backend.Type {
 	return backend.Cgo
+}
+
+func (b *Backend) Refresh(name string) {
 }

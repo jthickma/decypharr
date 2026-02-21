@@ -4,67 +4,95 @@ import (
 	"context"
 	"fmt"
 	"sync/atomic"
+	"time"
 
 	"github.com/rs/zerolog"
 	"github.com/sirrobot01/decypharr/internal/logger"
 	"github.com/sirrobot01/decypharr/pkg/manager"
 	"github.com/sirrobot01/decypharr/pkg/mount/dfs/backend"
+	_ "github.com/sirrobot01/decypharr/pkg/mount/dfs/backend/register"
+	fuseconfig "github.com/sirrobot01/decypharr/pkg/mount/dfs/config"
+	"github.com/sirrobot01/decypharr/pkg/mount/dfs/vfs"
 )
 
 // Manager manages FUSE filesystem instances with proper caching
 type Manager struct {
-	mount   *Mount
-	manager *manager.Manager
-	logger  zerolog.Logger
-	ready   atomic.Bool
+	manager            *manager.Manager
+	logger             zerolog.Logger
+	ready              atomic.Bool
+	backend            backend.Backend
+	defaultBackendType backend.Type
+	config             *fuseconfig.FuseConfig
+	vfs                *vfs.Manager
 }
 
 // NewManager creates a new  FUSE filesystem manager
 func NewManager(manager *manager.Manager) *Manager {
-	m := &Manager{
-		manager: manager,
-		logger:  logger.New("dfs"),
-	}
-	m.registerMount()
-	return m
-}
+	fuseConfig := fuseconfig.ParseFuseConfig()
 
-func (m *Manager) registerMount() {
-	mountInfo := m.manager.RootInfo()
-	if mountInfo == nil {
-		m.logger.Error().Msg("No mount info available to register DFS mount")
-		return
+	m := &Manager{
+		manager:            manager,
+		logger:             logger.New("dfs"),
+		defaultBackendType: backend.GetDefaultBackendType(),
+		config:             fuseConfig,
 	}
-	// Use the new backend-aware mount constructor
-	// This will use anacrolix backend by default (supports Fuse-T on macOS)
-	mnt, err := NewMount(mountInfo.Name(), m.manager, backend.DefaultBackend())
-	if err != nil {
-		m.logger.Error().Err(err).Msgf("Failed to create DFS mount for: %s", mountInfo.Name())
-		return
-	}
-	m.mount = mnt
+	return m
 }
 
 // Start starts the FUSE filesystem manager
 func (m *Manager) Start(ctx context.Context) error {
-	if m.mount == nil {
-		return fmt.Errorf("mount not initialized")
+	// Create VFS manager
+
+	m.logger.Info().
+		Str("mount_path", m.config.MountPath).
+		Str("backend", string(m.defaultBackendType)).
+		Msg("Starting DFS with backend")
+
+	vfsManager, err := vfs.NewManager(context.Background(), m.manager, m.config)
+	if err != nil {
+		return fmt.Errorf("failed to create VFS manager: %w", err)
 	}
-	if err := m.mount.Start(ctx); err != nil {
-		m.logger.Error().Err(err).Msgf("Failed to mount FUSE filesystem")
-	} else {
-		m.logger.Info().Msgf("Successfully mounted FUSE filesystem for debrid")
+	m.vfs = vfsManager
+
+	// Create backend
+	bck, err := backend.New(m.defaultBackendType, vfsManager, m.config)
+	if err != nil {
+		return fmt.Errorf("failed to create backend: %w", err)
 	}
+	m.backend = bck
+
+	// Mount using the backend
+	if err := m.backend.Mount(ctx); err != nil {
+		return fmt.Errorf("backend mount failed: %w", err)
+	}
+
 	m.ready.Store(true)
+	m.logger.Info().
+		Str("mount_path", m.config.MountPath).
+		Str("backend", string(m.defaultBackendType)).
+		Msg("DFS started successfully")
 	return nil
 }
 
 // Stop stops the  FUSE filesystem manager
 func (m *Manager) Stop() error {
-	if m.mount == nil {
-		return fmt.Errorf("mount not initialized")
+	if m.backend == nil {
+		m.logger.Info().Msg("Backend not initialized, nothing to stop")
+		return nil
 	}
-	return m.mount.Stop()
+	m.logger.Info().
+		Str("backend", string(m.backend.Type())).
+		Msg("Stopping FUSE filesystem")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Unmount using backend, this also ensures the VFS manager is properly closed
+	if err := m.backend.Unmount(ctx); err != nil {
+		m.logger.Warn().Err(err).Msg("Backend unmount error")
+	}
+	m.ready.Store(false)
+	return nil
 }
 
 func (m *Manager) IsReady() bool {
@@ -72,8 +100,11 @@ func (m *Manager) IsReady() bool {
 }
 
 func (m *Manager) Refresh(dirs []string) error {
+	if m.backend == nil {
+		return fmt.Errorf("backend not initialized")
+	}
 	for _, dir := range dirs {
-		m.mount.RefreshDirectory(dir)
+		m.backend.Refresh(dir)
 	}
 	return nil
 }
@@ -85,10 +116,22 @@ func (m *Manager) Stats() *manager.MountStats {
 		Ready:   m.ready.Load(),
 		Type:    m.Type(),
 	}
-	if m.mount != nil {
-		ms.DFS = m.mount.dfsDetail()
-	}
+	ms.DFS = m.dfsDetail()
 	return ms
+}
+
+func (m *Manager) dfsDetail() *manager.DFSDetail {
+	d := &manager.DFSDetail{
+		Backend: string(m.defaultBackendType),
+		Ready:   m.ready.Load(),
+	}
+	if m.config != nil {
+		d.MountPath = m.config.MountPath
+	}
+	if m.vfs != nil {
+		d.VFS = m.vfs.Stats()
+	}
+	return d
 }
 
 func (m *Manager) Type() string {

@@ -23,44 +23,22 @@ import (
 type FS struct {
 	fuse.FileSystemBase // Embed base for default implementations
 
-	vfs     *vfs.Manager
-	config  *config.FuseConfig
-	logger  zerolog.Logger
-	manager *manager.Manager
+	vfs    *vfs.Manager
+	config *config.FuseConfig
+	logger zerolog.Logger
 
 	// Handle management
 	handles *HandleManager
 }
 
 // NewFS creates a new cgofuse filesystem
-func NewFS(vfsManager *vfs.Manager, mgr *manager.Manager, config *config.FuseConfig, logger zerolog.Logger) *FS {
+func NewFS(vfsManager *vfs.Manager, config *config.FuseConfig, logger zerolog.Logger) *FS {
 	return &FS{
 		vfs:     vfsManager,
 		config:  config,
 		logger:  logger,
-		manager: mgr,
 		handles: NewHandleManager(),
 	}
-}
-
-// GetVFS returns the VFS manager
-func (f *FS) GetVFS() *vfs.Manager {
-	return f.vfs
-}
-
-// GetConfig returns the FUSE configuration
-func (f *FS) GetConfig() *config.FuseConfig {
-	return f.config
-}
-
-// GetManager returns the manager
-func (f *FS) GetManager() *manager.Manager {
-	return f.manager
-}
-
-// GetRootDir returns the filesystem for backend interface
-func (f *FS) GetRootDir() interface{} {
-	return f
 }
 
 // Init is called when the filesystem is mounted
@@ -141,7 +119,7 @@ func (f *FS) Readdir(path string, fill func(name string, stat *fuse.Stat_t, ofst
 
 	if path == "/" {
 		// Root directory - list all torrents/entries
-		entries := f.manager.GetEntries()
+		entries := f.vfs.GetManager().GetEntries()
 		for _, entry := range entries {
 			fill(entry.Name(), f.entryStat(&entry), 0)
 		}
@@ -158,10 +136,10 @@ func (f *FS) Readdir(path string, fill func(name string, stat *fuse.Stat_t, ofst
 
 	if len(parts) == 1 {
 		// First level directory (e.g., /__all__, /__bad__, /torrents, /nzbs, or a direct torrent)
-		_, children := f.manager.GetEntryChildren(groupOrTorrent)
+		_, children := f.vfs.GetManager().GetEntryChildren(groupOrTorrent)
 		if children == nil {
 			// Try as a direct torrent directory
-			_, children = f.manager.GetTorrentChildren(groupOrTorrent)
+			_, children = f.vfs.GetManager().GetTorrentChildren(groupOrTorrent)
 		}
 		for _, child := range children {
 			fill(child.Name(), f.entryStat(&child), 0)
@@ -174,7 +152,7 @@ func (f *FS) Readdir(path string, fill func(name string, stat *fuse.Stat_t, ofst
 	torrentName := parts[1]
 
 	// get the torrent's children (files)
-	_, children := f.manager.GetTorrentChildren(torrentName)
+	_, children := f.vfs.GetManager().GetTorrentChildren(torrentName)
 	for _, child := range children {
 		fill(child.Name(), f.entryStat(&child), 0)
 	}
@@ -367,7 +345,7 @@ func (f *FS) Unlink(path string) int {
 		return -fuse.EISDIR
 	}
 
-	if err := f.manager.RemoveEntry(info); err != nil {
+	if err := f.vfs.GetManager().RemoveEntry(info); err != nil {
 		f.logger.Error().Err(err).Str("file", info.Name()).Msg("Failed to remove file")
 		return -fuse.EIO
 	}
@@ -391,7 +369,7 @@ func (f *FS) Rmdir(path string) int {
 		return -fuse.ENOTDIR
 	}
 
-	if err := f.manager.RemoveEntry(info); err != nil {
+	if err := f.vfs.GetManager().RemoveEntry(info); err != nil {
 		f.logger.Error().Err(err).Str("dir", info.Name()).Msg("Failed to remove directory")
 		return -fuse.EIO
 	}
@@ -418,7 +396,7 @@ func (f *FS) getFileInfo(path string) (*manager.FileInfo, error) {
 	// Check if it's a top-level entry (from GetEntries)
 	if len(parts) == 1 {
 		// First check if it's one of the special directories or version.txt
-		entries := f.manager.GetEntries()
+		entries := f.vfs.GetManager().GetEntries()
 		for _, entry := range entries {
 			if entry.Name() == name {
 				// Return a copy to avoid modifying the original
@@ -427,7 +405,7 @@ func (f *FS) getFileInfo(path string) (*manager.FileInfo, error) {
 			}
 		}
 		// Not found in root entries, try as a torrent in one of the groups
-		return f.manager.GetTorrentEntry(name)
+		return f.vfs.GetManager().GetTorrentEntry(name)
 	}
 
 	// Depth 2: could be a torrent inside __all__, or a file inside a torrent
@@ -436,7 +414,7 @@ func (f *FS) getFileInfo(path string) (*manager.FileInfo, error) {
 		entryName := parts[1]
 
 		// Check if first part is a special group (__all__, __bad__, torrents, nzbs)
-		_, children := f.manager.GetEntryChildren(groupOrTorrent)
+		_, children := f.vfs.GetManager().GetEntryChildren(groupOrTorrent)
 		for _, child := range children {
 			if child.Name() == entryName {
 				info := child
@@ -445,14 +423,14 @@ func (f *FS) getFileInfo(path string) (*manager.FileInfo, error) {
 		}
 
 		// Otherwise treat first part as torrent name and second as filename
-		return f.manager.GetTorrentFile(groupOrTorrent, entryName)
+		return f.vfs.GetManager().GetTorrentFile(groupOrTorrent, entryName)
 	}
 
 	// Depth 3+: file within a torrent inside a group
 	// Path: /group/torrent/file
 	torrentName := parts[1]
 	filename := strings.Join(parts[2:], "/")
-	return f.manager.GetTorrentFile(torrentName, filename)
+	return f.vfs.GetManager().GetTorrentFile(torrentName, filename)
 }
 
 // splitPath splits a path into components

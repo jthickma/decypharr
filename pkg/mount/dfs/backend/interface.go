@@ -3,10 +3,10 @@ package backend
 import (
 	"cmp"
 	"context"
+	"fmt"
 	"os"
 	"runtime"
 
-	"github.com/sirrobot01/decypharr/pkg/manager"
 	"github.com/sirrobot01/decypharr/pkg/mount/dfs/config"
 	"github.com/sirrobot01/decypharr/pkg/mount/dfs/vfs"
 )
@@ -19,10 +19,44 @@ const (
 	Cgo    Type = "cgo"
 )
 
-// DefaultBackend returns the recommended backend for the current platform
+// Backend represents a FUSE backend implementation
+type Backend interface {
+	// Mount mounts the filesystem at the configured path
+	Mount(ctx context.Context) error
+
+	// Unmount unmounts the filesystem
+	Unmount(ctx context.Context) error
+
+	// WaitReady waits for the mount to be ready
+	WaitReady(ctx context.Context) error
+
+	// IsReady returns true if the mount is ready
+	IsReady() bool
+
+	Refresh(dir string)
+
+	// Type returns the backend type
+	Type() Type
+}
+
+type Func func(vfs *vfs.Manager, config *config.FuseConfig) (Backend, error)
+
+var registry = make(map[Type]Func)
+
+// Register registers a backend constructor function for a given type
+func Register(backendType Type, constructor Func) {
+	fmt.Println("Registering backend:", backendType)
+	registry[backendType] = constructor
+}
+
+func Registry() map[Type]Func {
+	return registry
+}
+
+// GetDefaultBackendType returns the recommended backend for the current platform
 // Linux: hanwen (fastest, pure Go)
 // macOS/Windows: cgofuse (cross-platform, works with Fuse-T/WinFsp)
-func DefaultBackend() Type {
+func GetDefaultBackendType() Type {
 	if runtime.GOOS == "linux" {
 		// Get from environment variable override
 		backendEnv := cmp.Or(os.Getenv("DFS_FUSE_BACKEND"), "hanwen")
@@ -38,55 +72,16 @@ func DefaultBackend() Type {
 	return Cgo
 }
 
-// Backend represents a FUSE backend implementation
-type Backend interface {
-	// Mount mounts the filesystem at the configured path
-	Mount(ctx context.Context, root RootNode) error
-
-	// Unmount unmounts the filesystem
-	Unmount(ctx context.Context) error
-
-	// WaitReady waits for the mount to be ready
-	WaitReady(ctx context.Context) error
-
-	// IsReady returns true if the mount is ready
-	IsReady() bool
-
-	// Type returns the backend type
-	Type() Type
-}
-
-// RootNode represents the root node of the filesystem that backends will mount
-type RootNode interface {
-	// GetVFS returns the VFS manager
-	GetVFS() *vfs.Manager
-
-	// GetConfig returns the FUSE configuration
-	GetConfig() *config.FuseConfig
-
-	// GetManager returns the manager
-	GetManager() *manager.Manager
-
-	// GetRootDir returns the root directory implementation
-	GetRootDir() interface{}
-}
-
-// Factory creates a new backend instance
-type Factory func(config *config.FuseConfig) (Backend, error)
-
-var factories = make(map[Type]Factory)
-
-// Register registers a backend factory
-func Register(backendType Type, factory Factory) {
-	factories[backendType] = factory
-}
-
-// Create creates a new backend of the specified type
-func Create(backendType Type, config *config.FuseConfig) (Backend, error) {
-	factory, ok := factories[backendType]
+func New(backendType Type, vfs *vfs.Manager, config *config.FuseConfig) (Backend, error) {
+	constructor, ok := registry[backendType]
 	if !ok {
-		// Default to platform default if not found
-		factory = factories[DefaultBackend()]
+		if len(registry) == 0 {
+			return nil, fmt.Errorf("no backends registered")
+		}
+		// Fallback to any available backend
+		for _, c := range registry {
+			return c(vfs, config)
+		}
 	}
-	return factory(config)
+	return constructor(vfs, config)
 }

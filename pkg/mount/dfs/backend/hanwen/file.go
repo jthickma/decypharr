@@ -1,4 +1,4 @@
-//go:build !windows
+//go:build linux || (darwin && amd64)
 
 package hanwen
 

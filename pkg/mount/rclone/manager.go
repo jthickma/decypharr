@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -34,8 +35,9 @@ type Manager struct {
 	cancel        context.CancelFunc
 	serverReady   chan struct{}
 	serverStarted atomic.Bool
-	mount         *Mount
-	manager       *manager.Manager
+	info      atomic.Pointer[MountInfo]
+	manager   *manager.Manager
+	webdavURL string
 
 	client *rclone.Client
 }
@@ -61,6 +63,9 @@ type RCResponse struct {
 
 // NewManager creates a new rclone RC manager
 func NewManager(manager *manager.Manager) *Manager {
+
+	mainCfg := config.Get()
+	cfg := mainCfg.Mount
 	configDir := filepath.Join(config.GetMainPath(), "rclone")
 	_logger := logger.New("rclone")
 
@@ -69,9 +74,26 @@ func NewManager(manager *manager.Manager) *Manager {
 		_logger.Error().Err(err).Msg("Failed to create rclone config directory")
 	}
 
+	bindAddress := mainCfg.BindAddress
+	if bindAddress == "" {
+		bindAddress = "localhost"
+	}
+
+	baseUrl := fmt.Sprintf("http://%s:%s", bindAddress, mainCfg.Port)
+	webdavUrl, err := url.JoinPath(baseUrl, mainCfg.URLBase, "webdav")
+	if err != nil {
+		return nil
+	}
+
+	if !strings.HasSuffix(webdavUrl, "/") {
+		webdavUrl += "/"
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
-	rcServer := fmt.Sprintf("http://localhost:%s", config.Get().Mount.Rclone.Port)
+	rcServer := fmt.Sprintf("http://localhost:%s", cfg.Rclone.Port)
 	rcloneClient := rclone.NewClient(rcServer, "", "", _logger)
+
+
 
 	m := &Manager{
 		configDir:   configDir,
@@ -80,34 +102,18 @@ func NewManager(manager *manager.Manager) *Manager {
 		cancel:      cancel,
 		client:      rcloneClient,
 		serverReady: make(chan struct{}),
+		webdavURL:   webdavUrl,
 		manager:     manager,
 	}
-	m.registerMount()
 	return m
-}
-
-func (m *Manager) registerMount() {
-	mountInfo := m.manager.RootInfo()
-	if mountInfo == nil {
-		m.logger.Error().Msg("No mount info available to register rclone mount")
-		return
-	}
-	mnt, err := NewMount(m.manager, m.client)
-	if err != nil {
-		m.logger.Error().Err(err).Msgf("Failed to create rclone mount for: %s", mountInfo.Name())
-		return
-	}
-	m.mount = mnt
 }
 
 // Start starts the rclone RC server
 func (m *Manager) Start(ctx context.Context) error {
+	cfg := config.Get().Mount
 	if m.serverStarted.Load() {
 		return nil
 	}
-
-	cfg := config.Get()
-
 	// Use lumberjack for log rotation instead of rclone's --log-file
 	rotatingLog := &lumberjack.Logger{
 		Filename:   filepath.Join(logger.GetLogPath(), "rclone.log"),
@@ -119,13 +125,13 @@ func (m *Manager) Start(ctx context.Context) error {
 
 	args := []string{
 		"rcd",
-		"--rc-addr", ":" + cfg.Mount.Rclone.Port,
+		"--rc-addr", ":" + cfg.Rclone.Port,
 		"--rc-no-auth", // We'll handle auth at the application level
-		"--config", filepath.Join(m.configDir, "rclone.conf"),
+		"--config", filepath.Join(config.GetMainPath(), "rclone", "rclone.conf"),
 		// No --log-file, we capture output directly
 	}
 
-	logLevel := cfg.Mount.Rclone.LogLevel
+	logLevel := cfg.Rclone.LogLevel
 	if logLevel != "" {
 		if !slices.Contains([]string{"DEBUG", "INFO", "NOTICE", "ERROR"}, logLevel) {
 			logLevel = "INFO"
@@ -133,9 +139,9 @@ func (m *Manager) Start(ctx context.Context) error {
 		args = append(args, "--log-level", logLevel)
 	}
 
-	if cfg.Mount.Rclone.CacheDir != "" {
-		if err := os.MkdirAll(cfg.Mount.Rclone.CacheDir, 0755); err == nil {
-			args = append(args, "--cache-dir", cfg.Mount.Rclone.CacheDir)
+	if cfg.Rclone.CacheDir != "" {
+		if err := os.MkdirAll(cfg.Rclone.CacheDir, 0755); err == nil {
+			args = append(args, "--cache-dir", cfg.Rclone.CacheDir)
 		}
 	}
 	m.cmd = exec.CommandContext(ctx, "rclone", args...)
@@ -168,12 +174,10 @@ func (m *Manager) Start(ctx context.Context) error {
 		}
 
 		// Start mount
-		if m.mount != nil {
-			if err := m.mount.Start(m.ctx); err != nil {
-				m.logger.Error().Err(err).Msgf("Failed to mount rclone filesystem")
-			} else {
-				m.logger.Info().Msgf("Successfully mounted rclone filesystem")
-			}
+		if err := m.startMount(m.ctx); err != nil {
+			m.logger.Error().Err(err).Msgf("Failed to mount rclone filesystem")
+		} else {
+			m.logger.Info().Msgf("Successfully mounted rclone filesystem")
 		}
 
 		// Wait for command to finish and log output
@@ -205,12 +209,10 @@ func (m *Manager) Stop() error {
 	m.cancel()
 
 	// Stopping mount
-	if m.mount != nil {
-		if err := m.mount.Stop(); err != nil {
-			m.logger.Error().Err(err).Msgf("Failed to unmount rclone filesystem")
-		} else {
-			m.logger.Info().Msgf("Successfully unmounted rclone filesystem")
-		}
+	if err := m.stopMount(); err != nil {
+		m.logger.Error().Err(err).Msgf("Failed to unmount rclone filesystem")
+	} else {
+		m.logger.Info().Msgf("Successfully unmounted rclone filesystem")
 	}
 
 	if m.cmd != nil && m.cmd.Process != nil {
@@ -249,6 +251,50 @@ func (m *Manager) Stop() error {
 	return nil
 }
 
+
+func (m *Manager) getMountInfo() *MountInfo {
+	return m.info.Load()
+}
+
+func (m *Manager) IsMounted() bool {
+	info := m.getMountInfo()
+	return info != nil && info.Mounted
+}
+
+// Start creates the mount using rclone RC
+func (m *Manager) startMount(ctx context.Context) error {
+	// Check if already mounted
+	if m.IsMounted() {
+		m.logger.Info().Msg("Mount is already mounted")
+		return nil
+	}
+
+	// Try to ping rcd
+	if err := m.client.Ping(ctx); err != nil {
+		return fmt.Errorf("rclone RC server is not reachable: %w", err)
+	}
+
+	if err := m.mountWithRetry(3); err != nil {
+		m.logger.Error().Msg("Mount operation failed")
+		return fmt.Errorf("mount failed for")
+	}
+	go m.MonitorMounts(ctx)
+	return nil
+}
+
+func (m *Manager) stopMount() error {
+	if !m.IsMounted() {
+		m.logger.Info().Msgf("Mount is not mounted, skipping unmount")
+		return nil
+	}
+
+	m.logger.Info().Msg("Unmounting via RC")
+
+	m.unmount()
+	m.logger.Info().Msgf("Successfully unmounted %s", m.getMountInfo().LocalPath)
+	return nil
+}
+
 // IsReady returns true if the RC server is ready
 func (m *Manager) IsReady() bool {
 	select {
@@ -261,7 +307,7 @@ func (m *Manager) IsReady() bool {
 
 // Refresh refreshes directories in the VFS cache
 func (m *Manager) Refresh(dirs []string) error {
-	mountInfo := m.mount.getMountInfo()
+	mountInfo := m.getMountInfo()
 	if mountInfo == nil || !mountInfo.Mounted {
 		return fmt.Errorf("mount is not mounted")
 	}

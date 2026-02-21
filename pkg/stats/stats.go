@@ -34,22 +34,21 @@ type Collector struct {
 	cancel context.CancelFunc
 }
 
-// New creates a Collector and starts the background refresh goroutine.
+// New creates a Collector. Call Start() to begin background collection.
 func New(mgr *manager.Manager) *Collector {
-	c := &Collector{
+	return &Collector{
 		mgr:          mgr,
 		logger:       logger.New("stats"),
+		snapshot:     &Snapshot{}, // empty until first background collect
 		profileCache: make(map[string]*debridTypes.Profile),
 		profileTTL:   60 * time.Second,
 	}
-	// Build an initial snapshot synchronously so the first request is served immediately.
-	c.snapshot = c.collect()
-	return c
 }
 
-// Start begins the background refresh loop. Call from server startup.
+// Start begins the background refresh loop. Collects immediately, then every 5s.
 func (c *Collector) Start(ctx context.Context) {
 	ctx, c.cancel = context.WithCancel(ctx)
+	// First collection in background — doesn't block startup
 	go c.loop(ctx)
 }
 
@@ -77,6 +76,12 @@ func (c *Collector) Handler() http.HandlerFunc {
 
 // loop refreshes the snapshot on a timer.
 func (c *Collector) loop(ctx context.Context) {
+	// Collect immediately so stats are available ASAP after startup
+	snap := c.collect()
+	c.mu.Lock()
+	c.snapshot = snap
+	c.mu.Unlock()
+
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 	for {

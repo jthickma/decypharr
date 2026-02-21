@@ -11,7 +11,6 @@ import (
 )
 
 type Manager struct {
-	mount   *Mount
 	manager *manager.Manager
 	client  *rclone.Client
 	logger  zerolog.Logger
@@ -28,15 +27,10 @@ func NewManager(manager *manager.Manager) *Manager {
 		cfg.Mount.ExternalRclone.RCPassword,
 		_logger,
 	)
-	mnt, err := NewMount(manager)
-	if err != nil {
-		_logger.Error().Err(err).Msg("Failed to create external rclone mount")
-	}
 	m := &Manager{
 		manager: manager,
 		logger:  _logger,
 		client:  rcloneClient,
-		mount:   mnt,
 	}
 	return m
 }

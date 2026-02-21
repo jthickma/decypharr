@@ -2,7 +2,6 @@ package config
 
 import (
 	"fmt"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -23,8 +22,8 @@ type FuseConfig struct {
 	CacheExpiry time.Duration
 
 	// Performance settings
-	ChunkSize        int64
-	ReadAheadSize    int64
+	ChunkSize     int64
+	ReadAheadSize int64
 	DaemonTimeout time.Duration
 
 	Retries int
@@ -59,7 +58,7 @@ func DefaultFuseConfig() *FuseConfig {
 }
 
 // ParseFuseConfig converts config.DFS to internal FuseConfig
-func ParseFuseConfig(mountName string) (*FuseConfig, error) {
+func ParseFuseConfig() *FuseConfig {
 	fuseConfig := DefaultFuseConfig()
 	mainCfg := config.Get()
 	cfg := mainCfg.Mount.DFS
@@ -68,54 +67,54 @@ func ParseFuseConfig(mountName string) (*FuseConfig, error) {
 		totalDebrids = 1
 	}
 
-	fuseConfig.CacheDir = filepath.Join(cfg.CacheDir, mountName)
-	fuseConfig.MountPath = filepath.Join(mainCfg.Mount.MountPath, mountName)
+	fuseConfig.CacheDir = cfg.CacheDir
+	fuseConfig.MountPath = mainCfg.Mount.MountPath
 
 	if cfg.DaemonTimeout != "" {
 		timeout, err := utils.ParseDuration(cfg.DaemonTimeout)
-		if err != nil {
-			return nil, fmt.Errorf("invalid read timeout: %w", err)
+		if err == nil {
+			fuseConfig.DaemonTimeout = timeout
 		}
-		fuseConfig.DaemonTimeout = timeout
+
 	}
 	if cfg.DiskCacheSize != "" {
 		size, err := parseSize(cfg.DiskCacheSize)
-		if err != nil {
-			return nil, fmt.Errorf("invalid disk cache size: %w", err)
+		if err == nil {
+			fuseConfig.CacheDiskSize = size / int64(totalDebrids)
 		}
-		fuseConfig.CacheDiskSize = size / int64(totalDebrids)
+
 	}
 
 	if cfg.CacheCleanupInterval != "" {
 		interval, err := utils.ParseDuration(cfg.CacheCleanupInterval)
-		if err != nil {
-			return nil, fmt.Errorf("invalid cache cleanup interval: %w", err)
+		if err == nil {
+			fuseConfig.CacheCleanupInterval = interval
 		}
-		fuseConfig.CacheCleanupInterval = interval
+
 	}
 
 	if cfg.ChunkSize != "" {
 		size, err := parseSize(cfg.ChunkSize)
-		if err != nil {
-			return nil, fmt.Errorf("invalid chunk size: %w", err)
+		if err == nil {
+			fuseConfig.ChunkSize = size
 		}
-		fuseConfig.ChunkSize = size
+
 	}
 
 	if cfg.CacheExpiry != "" {
 		ttl, err := utils.ParseDuration(cfg.CacheExpiry)
-		if err != nil {
-			return nil, fmt.Errorf("invalid cache TTL: %w", err)
+		if err == nil {
+			fuseConfig.CacheExpiry = ttl
 		}
-		fuseConfig.CacheExpiry = ttl
+
 	}
 
 	if cfg.ReadAheadSize != "" {
 		size, err := parseSize(cfg.ReadAheadSize)
-		if err != nil {
-			return nil, fmt.Errorf("invalid read-ahead size: %w", err)
+		if err == nil {
+			fuseConfig.ReadAheadSize = size
 		}
-		fuseConfig.ReadAheadSize = size
+
 	}
 	// Otherwise keep the default (4) from DefaultFuseConfig()
 	fuseConfig.UID = cfg.UID
@@ -125,16 +124,16 @@ func ParseFuseConfig(mountName string) (*FuseConfig, error) {
 
 	if cfg.Umask != "" {
 		umask, err := parseUmask(cfg.Umask)
-		if err != nil {
-			return nil, fmt.Errorf("invalid umask: %w", err)
+		if err == nil {
+			fuseConfig.Umask = umask
 		}
-		fuseConfig.Umask = umask
+
 	}
 
 	// retry settings
 	fuseConfig.Retries = mainCfg.Retries
 
-	return fuseConfig, nil
+	return fuseConfig
 }
 
 // parseUmask parses umask strings like "0022"

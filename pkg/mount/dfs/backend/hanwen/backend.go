@@ -1,4 +1,4 @@
-//go:build !windows
+//go:build linux || (darwin && amd64)
 
 package hanwen
 
@@ -9,15 +9,16 @@ import (
 	"os/exec"
 	"runtime"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"github.com/hanwen/go-fuse/v2/fs"
 	"github.com/hanwen/go-fuse/v2/fuse"
 	"github.com/rs/zerolog"
 	"github.com/sirrobot01/decypharr/internal/logger"
+	"github.com/sirrobot01/decypharr/internal/utils"
 	"github.com/sirrobot01/decypharr/pkg/mount/dfs/backend"
 	"github.com/sirrobot01/decypharr/pkg/mount/dfs/config"
+	"github.com/sirrobot01/decypharr/pkg/mount/dfs/vfs"
 )
 
 const (
@@ -39,25 +40,35 @@ type Backend struct {
 	server      *fuse.Server
 	ready       atomic.Bool
 	unmountFunc func(ctx context.Context)
-	rootNode    backend.RootNode
+	root        *Dir
+	vfs         *vfs.Manager
 }
 
 // NewBackend creates a new hanwen backend
-func NewBackend(config *config.FuseConfig) (backend.Backend, error) {
+func NewBackend(vfs *vfs.Manager, config *config.FuseConfig) (backend.Backend, error) {
+	now := utils.Now()
+	log := logger.New("hanwen-backend")
+	root := NewDir(vfs, "", LevelRoot, uint64(now.Unix()), config, log)
 	return &Backend{
 		config: config,
-		logger: logger.New("hanwen-backend"),
+		logger: log,
+		root:   root,
+		vfs:    vfs,
 	}, nil
 }
 
 // Mount mounts the filesystem using hanwen/go-fuse
-func (b *Backend) Mount(ctx context.Context, root backend.RootNode) error {
-	b.rootNode = root
-
+func (b *Backend) Mount(ctx context.Context) error {
 	// Create mount point if it doesn't exist(skip if on Windows)
-	if runtime.GOOS != "windows" {
-		_ = os.MkdirAll(b.config.MountPath, 0755)
+
+	if b.root == nil {
+		return fmt.Errorf("root node is not initialized")
 	}
+	if b.vfs == nil {
+		return fmt.Errorf("VFS manager is not initialized")
+	}
+
+	_ = os.MkdirAll(b.config.MountPath, 0755)
 	// Try to unmount if already mounted
 	b.forceUnmount()
 
@@ -85,12 +96,6 @@ func (b *Backend) Mount(ctx context.Context, root backend.RootNode) error {
 
 	mountOpt.Options = opt
 
-	// get the hanwen-specific root dir
-	rootDir, ok := root.GetRootDir().(*Dir)
-	if !ok {
-		return fmt.Errorf("root node must be hanwen Dir type")
-	}
-
 	// Configure FUSE options
 	// Use short entry timeout (1s) to ensure new files appear quickly
 	entryTimeout := EntryTimeout
@@ -116,7 +121,7 @@ func (b *Backend) Mount(ctx context.Context, root backend.RootNode) error {
 
 	// Run fs.Mount in a goroutine
 	go func() {
-		server, err := fs.Mount(b.config.MountPath, rootDir, opts)
+		server, err := fs.Mount(b.config.MountPath, b.root, opts)
 		fsResultChan <- fsResult{server: server, err: err}
 	}()
 
@@ -163,8 +168,8 @@ func (b *Backend) Mount(ctx context.Context, root backend.RootNode) error {
 
 		go func() {
 			// Close VFS manager
-			if root.GetVFS() != nil {
-				if err := root.GetVFS().Close(); err != nil {
+			if b.vfs != nil {
+				if err := b.vfs.Close(); err != nil {
 					b.logger.Warn().Err(err).Msg("Failed to close VFS")
 				}
 			}
@@ -207,8 +212,8 @@ func (b *Backend) Unmount(ctx context.Context) error {
 	}
 
 	// Close VFS manager
-	if b.rootNode != nil && b.rootNode.GetVFS() != nil {
-		if err := b.rootNode.GetVFS().Close(); err != nil {
+	if b.vfs != nil {
+		if err := b.vfs.Close(); err != nil {
 			b.logger.Warn().Err(err).Msg("Failed to close VFS")
 		}
 	}
@@ -231,6 +236,16 @@ func (b *Backend) IsReady() bool {
 // Type returns the backend type
 func (b *Backend) Type() backend.Type {
 	return backend.Hanwen
+}
+
+func (b *Backend) Refresh(dir string) {
+	// Refresh the root dir first
+	if b.root != nil {
+		b.root.Refresh()
+		if dir != "" {
+			b.root.RefreshChild(dir)
+		}
+	}
 }
 
 // forceUnmount attempts to force unmount a path using system commands
@@ -264,28 +279,4 @@ func (b *Backend) tryUnmountCommand(ctx context.Context, args ...string) error {
 
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
 	return cmd.Run()
-}
-
-// RootDir wraps the hanwen Dir to implement backend.RootNode interface
-type RootDir struct {
-	*Dir
-}
-
-// Getattr returns root directory attributes
-func (r *RootDir) Getattr(ctx context.Context, fh fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
-	out.Mode = 0755 | fuse.S_IFDIR
-	out.Nlink = 2 // Directories have 2 links (itself + "." entry)
-	out.Uid = r.config.UID
-	out.Gid = r.config.GID
-	now := time.Now()
-	out.Atime = uint64(now.Unix())
-	out.Mtime = uint64(now.Unix())
-	out.Ctime = uint64(now.Unix())
-	out.AttrValid = uint64(AttrTimeout.Seconds())
-	return 0
-}
-
-// GetVFS returns the VFS manager
-func (r *RootDir) GetVFS() *config.FuseConfig {
-	return r.config
 }

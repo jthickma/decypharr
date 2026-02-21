@@ -355,6 +355,7 @@ func (c *Cache) newItem(key, entryName, filename string, fileSize int64) (*Cache
 		info:     info,
 		logger:   log.Rate(buildCacheKey(entryName, filename)),
 	}
+	item.inFlightNotify = sync.NewCond(&item.inFlightMu)
 	item.file.Store(fd)
 	item.atime.Store(info.ATime.UnixNano())
 
@@ -513,6 +514,97 @@ type CacheItem struct {
 
 	closeOnce sync.Once
 	closeErr  error
+
+	// In-flight tracking: ranges currently being downloaded by a Stream() call.
+	// Prevents duplicate HTTP requests for overlapping reads.
+	inFlightMu     sync.Mutex
+	inFlight       ranges.Ranges
+	inFlightNotify *sync.Cond // broadcast when in-flight chunk completes
+}
+
+// RegisterInFlight marks a range as currently being downloaded.
+// Returns false if the range is already fully in-flight (another downloader has it).
+func (item *CacheItem) RegisterInFlight(r ranges.Range) bool {
+	item.inFlightMu.Lock()
+	defer item.inFlightMu.Unlock()
+
+	// If already fully in-flight, don't register again
+	if item.inFlight.Present(r) {
+		return false
+	}
+
+	item.inFlight.Insert(r)
+	return true
+}
+
+// ClearInFlight removes a range from in-flight and wakes all waiters.
+func (item *CacheItem) ClearInFlight(r ranges.Range) {
+	item.inFlightMu.Lock()
+	// Remove by rebuilding without the cleared range
+	var newRanges ranges.Ranges
+	for _, fr := range item.inFlight {
+		diff := fr.Intersection(r)
+		if diff.IsEmpty() {
+			newRanges.Insert(fr)
+			continue
+		}
+		// Keep portions of fr that don't overlap with r
+		if fr.Pos < r.Pos {
+			newRanges.Insert(ranges.Range{Pos: fr.Pos, Size: r.Pos - fr.Pos})
+		}
+		if fr.End() > r.End() {
+			newRanges.Insert(ranges.Range{Pos: r.End(), Size: fr.End() - r.End()})
+		}
+	}
+	item.inFlight = newRanges
+	item.inFlightMu.Unlock()
+
+	// Wake all waiters
+	if item.inFlightNotify != nil {
+		item.inFlightNotify.Broadcast()
+	}
+}
+
+// WaitForInFlight blocks until the given range is either cached or no longer in-flight.
+func (item *CacheItem) WaitForInFlight(ctx context.Context, r ranges.Range) {
+	item.inFlightMu.Lock()
+	defer item.inFlightMu.Unlock()
+
+	for {
+		// Check if cached (lock-free range check outside inFlightMu is fine)
+		if item.HasRange(r) {
+			return
+		}
+		// Check if still in-flight
+		overlap := item.inFlight.Intersection(r)
+		if len(overlap) == 0 {
+			return // Not in-flight (maybe error path cleared it)
+		}
+		// Check context
+		if ctx.Err() != nil {
+			return
+		}
+		// Wait for broadcast
+		item.inFlightNotify.Wait()
+	}
+}
+
+// FindMissingExcludingInFlight returns the portion of r that is neither cached nor in-flight.
+func (item *CacheItem) FindMissingExcludingInFlight(r ranges.Range) ranges.Range {
+	// First get what's not cached
+	missing := item.FindMissing(r)
+	if missing.IsEmpty() {
+		return missing
+	}
+
+	// Subtract in-flight ranges
+	item.inFlightMu.Lock()
+	defer item.inFlightMu.Unlock()
+
+	if len(item.inFlight) == 0 {
+		return missing
+	}
+	return item.inFlight.FindMissing(missing)
 }
 
 func (item *CacheItem) startMetaWriter() {

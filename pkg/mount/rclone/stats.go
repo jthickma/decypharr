@@ -46,17 +46,15 @@ func (m *Manager) Stats() *manager.MountStats {
 		detail.Bandwidth = *bwStats
 	}
 
-	if m.mount != nil {
-		info := m.mount.getMountInfo()
-		if info != nil {
-			detail.Mount = &manager.RcloneMountInfo{
-				LocalPath:  info.LocalPath,
-				WebDAVURL:  info.WebDAVURL,
-				Mounted:    info.Mounted,
-				MountedAt:  info.MountedAt,
-				ConfigName: info.ConfigName,
-				Error:      info.Error,
-			}
+	info := m.getMountInfo()
+	if info != nil {
+		detail.Mount = &manager.RcloneMountInfo{
+			LocalPath:  info.LocalPath,
+			WebDAVURL:  info.WebDAVURL,
+			Mounted:    info.Mounted,
+			MountedAt:  info.MountedAt,
+			ConfigName: info.ConfigName,
+			Error:      info.Error,
 		}
 	}
 
