@@ -298,12 +298,12 @@ func (u *Usenet) releaseFS(nzoID, filename string) {
 
 // cleanupIdleFS removes sessions with refCount=0 that haven't been used recently
 func (u *Usenet) cleanupIdleFS() {
-	ticker := time.NewTicker(30 * time.Second)
+	const idleThreshold = int64(10) // 10 seconds idle
+	ticker := time.NewTicker(time.Duration(idleThreshold) * time.Second)
 	defer ticker.Stop()
 
 	for range ticker.C {
 		now := utils.NowUnix()
-		idleThreshold := int64(10) // 10 seconds idle
 
 		u.fs.Range(func(key string, entry *fsEntry) bool {
 			if entry.refCount.Load() == 0 {

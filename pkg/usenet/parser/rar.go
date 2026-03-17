@@ -242,11 +242,6 @@ func (p *RARParser) Process(ctx context.Context, group *FileGroup, password stri
 		}
 		return nil, fmt.Errorf("no valid files found in RAR archive")
 	}
-
-	p.logger.Info().
-		Int("total_files", len(files)).
-		Msg("RAR archive processing complete")
-
 	return files, nil
 }
 

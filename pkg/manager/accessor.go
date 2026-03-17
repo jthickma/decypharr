@@ -40,10 +40,6 @@ func (m *Manager) Queue() *Queue {
 	return m.queue
 }
 
-func (m *Manager) JobQueue() *JobQueue {
-	return m.jobQueue
-}
-
 func (m *Manager) Clients() *xsync.Map[string, debrid.Client] {
 	return m.clients
 }

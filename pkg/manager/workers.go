@@ -10,9 +10,11 @@ import (
 )
 
 // runInitialCalls performs any initial calls of worker functions
-// for example, call the processQueuedEntries functions once
+// for example, call the trackAvailableSlots and processQueuedEntries functions once
 func (m *Manager) runInitialCalls(ctx context.Context) {
+	// Initial call to track available slots
 	go m.refreshDownloadLinks(ctx)
+	go m.trackAvailableSlots(ctx)
 	go m.processQueuedEntries()
 	go m.syncAccounts()
 }
@@ -42,6 +44,19 @@ func (m *Manager) refreshDownloadLinks(ctx context.Context) {
 func (m *Manager) addQueueProcessorJob(ctx context.Context) error {
 	// This function is responsible for starting queue processing scheduled tasks
 
+	if jd, err := utils.ConvertToJobDef("30s"); err != nil {
+		m.logger.Error().Err(err).Msg("Failed to convert slots tracking interval to job definition")
+	} else {
+		// Schedule the job
+		if _, err := m.scheduler.NewJob(jd, gocron.NewTask(func() {
+			m.trackAvailableSlots(ctx)
+		}), gocron.WithContext(ctx)); err != nil {
+			m.logger.Error().Err(err).Msg("Failed to create slots tracking job")
+		} else {
+			m.logger.Debug().Msgf("Slots tracking job scheduled for every %s", "30s")
+		}
+	}
+
 	if jd, err := utils.ConvertToJobDef(m.config.RefreshInterval); err != nil {
 		m.logger.Error().Err(err).Msg("Failed to convert queue processing interval to job definition")
 	} else {
@@ -49,7 +64,7 @@ func (m *Manager) addQueueProcessorJob(ctx context.Context) error {
 		if _, err := m.scheduler.NewJob(jd, gocron.NewTask(func() {
 			m.processQueuedEntries()
 		}), gocron.WithContext(ctx)); err != nil {
-			m.logger.Error().Err(err).Msg("Failed to create queue processing job")
+			m.logger.Error().Err(err).Msg("Failed to create slots tracking job")
 		} else {
 			m.logger.Debug().Msgf("Queue processing job scheduled for every %s", m.config.RefreshInterval)
 		}

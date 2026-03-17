@@ -221,8 +221,8 @@ func NewDownloaders(ctx context.Context, mgr *manager.Manager, item *CacheItem, 
 	return dls
 }
 
-// Download blocks until the range r is on disk
-func (dls *Downloaders) Download(r ranges.Range) error {
+// Download blocks until the range r is on disk, or until ctx is canceled.
+func (dls *Downloaders) Download(ctx context.Context, r ranges.Range) error {
 	// Circuit breaker: reject immediately if circuit is open
 	if dls.isCircuitOpen() {
 		lastErr := dls.getLastErr()
@@ -270,8 +270,18 @@ func (dls *Downloaders) Download(r ranges.Range) error {
 
 	dls.mu.Unlock()
 
-	// Block until range is fulfilled or error
-	return <-errChan
+	// Block until range is fulfilled, caller canceled, or error.
+	// Selecting on ctx.Done() prevents goroutine leaks when the FUSE read
+	// is interrupted (client disconnect, read timeout, unmount).
+	select {
+	case err := <-errChan:
+		return err
+	case <-ctx.Done():
+		dls.mu.Lock()
+		dls.removeWaiterLocked(errChan)
+		dls.mu.Unlock()
+		return ctx.Err()
+	}
 }
 
 // removeWaiterLocked removes a waiter by its channel (call with lock held)
@@ -505,6 +515,19 @@ func (dls *Downloaders) kickWaiters() {
 	// Spawn at most one missing downloader per kick. Re-ensuring for every
 	// waiter can create duplicate stream calls for the same range under load.
 	if len(remaining) == 0 || circuitOpen || dls.errorCount >= maxErrorCount {
+		return
+	}
+
+	// If the shared context is already canceled, fail all remaining waiters
+	// immediately instead of spawning downloaders that exit instantly and
+	// call kickWaiters() again — that creates a CPU-spinning goroutine loop.
+	if dls.ctx.Err() != nil {
+		ctxErr := dls.ctx.Err()
+		for _, w := range remaining {
+			w.errChan <- ctxErr
+		}
+		dls.waiters = remaining[:0]
+		dls.waiterCount.Store(0)
 		return
 	}
 

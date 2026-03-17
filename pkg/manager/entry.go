@@ -190,7 +190,12 @@ func (m *Manager) getEntryChildren(group string) (*FileInfo, []FileInfo) {
 	case EntryAllFolder:
 		// This returns all entries - using metadata-only iteration (no disk reads)
 		var infos []FileInfo
+		seen := make(map[string]struct{})
 		err := m.storage.ForEachMeta(func(meta *storage.EntryMetaInfo) error {
+			if _, ok := seen[meta.Name]; ok {
+				return nil
+			}
+			seen[meta.Name] = struct{}{}
 			infos = append(infos, FileInfo{
 				infohash:     meta.InfoHash,
 				name:         meta.Name,
@@ -209,8 +214,13 @@ func (m *Manager) getEntryChildren(group string) (*FileInfo, []FileInfo) {
 	case EntryTorrentFolder:
 		// This returns all torrents - using metadata-only iteration
 		var infos []FileInfo
+		seen := make(map[string]struct{})
 		err := m.storage.ForEachMeta(func(meta *storage.EntryMetaInfo) error {
 			if meta.Protocol == "torrent" {
+				if _, ok := seen[meta.Name]; ok {
+					return nil
+				}
+				seen[meta.Name] = struct{}{}
 				infos = append(infos, FileInfo{
 					infohash:     meta.InfoHash,
 					name:         meta.Name,
@@ -230,8 +240,13 @@ func (m *Manager) getEntryChildren(group string) (*FileInfo, []FileInfo) {
 	case EntryNZBFolder:
 		// This returns all nzbs - using metadata-only iteration
 		var infos []FileInfo
+		seen := make(map[string]struct{})
 		err := m.storage.ForEachMeta(func(meta *storage.EntryMetaInfo) error {
 			if meta.Protocol == "nzb" {
+				if _, ok := seen[meta.Name]; ok {
+					return nil
+				}
+				seen[meta.Name] = struct{}{}
 				infos = append(infos, FileInfo{
 					infohash:     meta.InfoHash,
 					name:         meta.Name,
@@ -251,8 +266,13 @@ func (m *Manager) getEntryChildren(group string) (*FileInfo, []FileInfo) {
 	case EntryBadFolder:
 		// Filter for bad entries - using metadata-only iteration
 		var infos []FileInfo
+		seen := make(map[string]struct{})
 		err := m.storage.ForEachMeta(func(meta *storage.EntryMetaInfo) error {
 			if meta.Bad {
+				if _, ok := seen[meta.Name]; ok {
+					return nil
+				}
+				seen[meta.Name] = struct{}{}
 				infos = append(infos, FileInfo{
 					infohash:     meta.InfoHash,
 					name:         meta.Name,
@@ -442,6 +462,7 @@ func (m *Manager) getCustomFolderChildren(folder string) []FileInfo {
 
 	// Use metadata-only iteration (no disk reads)
 	var infos []FileInfo
+	seen := make(map[string]struct{})
 	err := m.storage.ForEachMeta(func(meta *storage.EntryMetaInfo) error {
 		if meta.Bad {
 			return nil
@@ -450,6 +471,10 @@ func (m *Manager) getCustomFolderChildren(folder string) []FileInfo {
 			name: meta.Name,
 			size: meta.Size,
 		}, meta.AddedOn) {
+			if _, ok := seen[meta.Name]; ok {
+				return nil
+			}
+			seen[meta.Name] = struct{}{}
 			infos = append(infos, FileInfo{
 				infohash:     meta.InfoHash,
 				name:         meta.Name,

@@ -280,8 +280,11 @@ func (c *Client) ExecuteWithFailover(ctx context.Context, fn func(conn *Connecti
 			continue
 		}
 
-		// Use retry-go for retry logic with exponential backoff
+		// Use retry-go for retry logic with exponential backoff.
+		// currentProvider tracks which pool currentConn actually belongs to so
+		// returnOrReleaseConn always releases the right semaphore slot.
 		var currentConn = conn
+		var currentProvider = connProvider
 		err = retry.Do(
 			func() error {
 				execErr := c.safeExecute(currentConn, fn)
@@ -299,19 +302,24 @@ func (c *Client) ExecuteWithFailover(ctx context.Context, fn func(conn *Connecti
 						currentConn = nil
 						c.release(releasedConn)
 						// Get a fresh connection for retry
-						newConn, _, connErr := c.getAnyAvailableConnection(ctx, map[string]bool{})
+						newConn, newProvider, connErr := c.getAnyAvailableConnection(ctx, map[string]bool{})
 						if connErr != nil {
 							return retry.Unrecoverable(connErr)
 						}
-						// Prefer same provider for retry if possible
+						// Prefer same provider for retry if possible.
+						// If we landed on a different provider, try to swap for the original.
+						// On failure, keep the connection we already have (best-effort).
 						if newConn.address != connProvider.Host {
-							c.put(newConn, connProvider)
-							newConn, _, connErr = c.getConnectionFromProvider(ctx, connProvider)
-							if connErr != nil {
-								return retry.Unrecoverable(connErr)
+							if preferredConn, _, preferredErr := c.getConnectionFromProvider(ctx, connProvider); preferredErr == nil {
+								// Return the mismatched connection to its own pool, not connProvider's.
+								c.returnOrReleaseConn(newConn, newProvider)
+								newConn = preferredConn
+								newProvider = connProvider
 							}
+							// else: fall back to the connection from whichever provider had capacity
 						}
 						currentConn = newConn
+						currentProvider = newProvider
 						return execErr // Retriable
 
 					case ErrorTypeArticleNotFound:
@@ -343,12 +351,12 @@ func (c *Client) ExecuteWithFailover(ctx context.Context, fn func(conn *Connecti
 
 		// Success
 		if err == nil {
-			c.returnOrReleaseConn(currentConn, connProvider)
+			c.returnOrReleaseConn(currentConn, currentProvider)
 			return nil
 		}
 
 		// Handle failure
-		c.returnOrReleaseConn(currentConn, connProvider)
+		c.returnOrReleaseConn(currentConn, currentProvider)
 		lastErr = err
 
 		// Check if we should exclude this provider

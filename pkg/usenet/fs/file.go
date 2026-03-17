@@ -21,13 +21,13 @@ type File struct {
 	ctx             context.Context
 	volume          *types.Volume
 	info            volumeInfo
-	reader          io.ReadCloser                      // Sequential reader (for Read() method)
+	reader          io.ReadCloser                          // Sequential reader (for Read() method)
 	streamingReader atomic.Pointer[reader.StreamingReader] // Streaming reader for ReadAt()
-	readerOnce      sync.Once                          // Ensures streaming reader created exactly once
-	readerErr       error                              // Error from streaming reader creation
-	manager         *nntp.Client                       // Connection manager
-	maxConcurrent   int                                // Max concurrent connections for this file's reader
-	prefetchSize    int64                              // Prefetch size in bytes
+	readerOnce      sync.Once                              // Ensures streaming reader created exactly once
+	readerErr       error                                  // Error from streaming reader creation
+	manager         *nntp.Client                           // Connection manager
+	maxConcurrent   int                                    // Max concurrent connections for this file's reader
+	prefetchSize    int64                                  // Prefetch size in bytes
 	pos             atomic.Int64
 	logger          zerolog.Logger
 	closed          atomic.Bool

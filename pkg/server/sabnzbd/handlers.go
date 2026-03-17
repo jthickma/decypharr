@@ -122,14 +122,14 @@ func (s *SABnzbd) handleDelete(w http.ResponseWriter, r *http.Request) {
 			// All deletions failed
 			s.writeError(w, fmt.Sprintf("All deletions failed: %s", strings.Join(errors, "; ")), http.StatusInternalServerError)
 			return
-		} else {
-			// Partial success
-			s.logger.Warn().
-				Int("success_count", successCount).
-				Int("error_count", len(errors)).
-				Strs("errors", errors).
-				Msg("Partial success in queue deletion")
 		}
+
+		// Partial success
+		s.logger.Warn().
+			Int("success_count", successCount).
+			Int("error_count", len(errors)).
+			Strs("errors", errors).
+			Msg("Partial success in queue deletion")
 	}
 
 	response := StatusResponse{
@@ -593,15 +593,11 @@ func (s *SABnzbd) addNZBFile(ctx context.Context, content []byte, filename strin
 	cfg := config.Get()
 
 	importReq := manager.NewNZBRequest(filename, s.downloadFolder, content, arr, action, cfg.CallbackURL, manager.ImportTypeSABnzbd, cfg.SkipMultiSeason)
-	job := manager.NewJob(manager.JobTypeNZB, importReq)
-	if err := s.manager.SubmitJob(job); err != nil {
-		return "", fmt.Errorf("failed to submit NZB job: %w", err)
-	}
-	// Wait for the NZB to be parsed and entry created (so we can return the ID)
-	if err := job.Wait(ctx); err != nil {
+	id, err := s.manager.AddNewNZB(ctx, importReq)
+	if err != nil {
 		return "", err
 	}
-	return importReq.Id, nil
+	return id, nil
 }
 
 // formatSize formats bytes to human-readable string (SABnzbd format)

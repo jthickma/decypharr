@@ -251,6 +251,62 @@ func (c *Connection) GetHeader(messageID string, maxSnippet int) (*YencMetadata,
 	return meta, nil
 }
 
+func metadataFromDecoder(dec *nntpyenc.Decoder, snippet []byte) *YencMetadata {
+	return &YencMetadata{
+		Name:     dec.Meta.FileName,
+		Size:     dec.Meta.FileSize,
+		Part:     dec.Meta.PartNumber,
+		Total:    dec.Meta.TotalParts,
+		Offset:   dec.Meta.Offset,
+		PartSize: dec.Meta.PartSize,
+		Begin:    dec.Meta.Begin(),
+		End:      dec.Meta.End(),
+		Snippet:  snippet,
+	}
+}
+
+// GetHeaderPrefix retrieves exact yEnc metadata plus a small decoded prefix
+// while keeping the NNTP connection reusable by draining the decoder to EOF.
+func (c *Connection) GetHeaderPrefix(messageID string, maxSnippet int) (*YencMetadata, error) {
+	messageID = FormatMessageID(messageID)
+	if err := c.sendCommand(fmt.Sprintf("BODY %s", messageID)); err != nil {
+		return nil, NewConnectionError(fmt.Errorf("failed to send BODY command: %w", err))
+	}
+
+	resp, err := c.readResponse()
+	if err != nil {
+		return nil, NewConnectionError(fmt.Errorf("failed to read body response: %w", err))
+	}
+
+	if resp.Code != 222 {
+		return nil, classifyNNTPError(resp.Code, resp.Message)
+	}
+
+	_ = c.conn.SetReadDeadline(utils.Now().Add(timeouts.StreamBodyTimeout))
+	defer func() { _ = c.conn.SetReadDeadline(time.Time{}) }()
+
+	dec := nntpyenc.AcquireDecoder(c.reader)
+	defer nntpyenc.ReleaseDecoder(dec)
+
+	var snippet []byte
+	if maxSnippet > 0 {
+		snippet = make([]byte, maxSnippet)
+		n, readErr := io.ReadFull(dec, snippet)
+		if readErr != nil && readErr != io.EOF && !errors.Is(readErr, io.ErrUnexpectedEOF) {
+			_ = c.conn.Close()
+			return nil, fmt.Errorf("failed to read snippet: %w", readErr)
+		}
+		snippet = snippet[:n]
+	}
+
+	if _, err := io.Copy(io.Discard, dec); err != nil {
+		_ = c.conn.Close()
+		return nil, fmt.Errorf("failed to drain article body: %w", err)
+	}
+
+	return metadataFromDecoder(dec, snippet), nil
+}
+
 // GetBody retrieves article body by message ID as raw bytes (used by GetHeader)
 func (c *Connection) GetBody(messageID string) ([]byte, error) {
 	messageID = FormatMessageID(messageID)
@@ -278,18 +334,25 @@ func (c *Connection) GetBody(messageID string) ([]byte, error) {
 // Uses textproto.DotReader + rapidyenc streaming decoder to decode while reading
 // from the network - no intermediate buffering of the full body.
 func (c *Connection) GetDecodedBody(messageID string) ([]byte, error) {
+	decoded, _, err := c.GetDecodedBodyWithMetadata(messageID)
+	return decoded, err
+}
+
+// GetDecodedBodyWithMetadata retrieves and decodes the article body while also
+// returning the parsed yEnc metadata from the same pass.
+func (c *Connection) GetDecodedBodyWithMetadata(messageID string) ([]byte, *YencMetadata, error) {
 	messageID = FormatMessageID(messageID)
 	if err := c.sendCommand(fmt.Sprintf("BODY %s", messageID)); err != nil {
-		return nil, NewConnectionError(fmt.Errorf("failed to send BODY command: %w", err))
+		return nil, nil, NewConnectionError(fmt.Errorf("failed to send BODY command: %w", err))
 	}
 
 	resp, err := c.readResponse()
 	if err != nil {
-		return nil, NewConnectionError(fmt.Errorf("failed to read body response: %w", err))
+		return nil, nil, NewConnectionError(fmt.Errorf("failed to read body response: %w", err))
 	}
 
 	if resp.Code != 222 {
-		return nil, classifyNNTPError(resp.Code, resp.Message)
+		return nil, nil, classifyNNTPError(resp.Code, resp.Message)
 	}
 
 	// Set read deadline to prevent hanging on stalled servers
@@ -305,11 +368,11 @@ func (c *Connection) GetDecodedBody(messageID string) ([]byte, error) {
 	_, err = io.Copy(output, dec)
 
 	if err != nil {
-		return nil, fmt.Errorf("streaming yenc decode failed: %w", err)
+		return nil, nil, fmt.Errorf("streaming yenc decode failed: %w", err)
 	}
 	decoded := output.Bytes()
 
-	return decoded, nil
+	return decoded, metadataFromDecoder(dec, nil), nil
 }
 
 func (c *Connection) StreamBody(messageID string, w io.Writer) (int64, error) {

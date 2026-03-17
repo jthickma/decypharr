@@ -29,11 +29,6 @@ type Job struct {
 	NZBGroups map[string]*parser.FileGroup // NZB file groups (set after parse)
 	Entry     *storage.Entry             // Entry created during processing
 	CreatedAt time.Time
-
-	// Result signaling - callers can optionally wait for completion
-	done chan struct{}
-	err  error
-	mu   sync.Mutex
 }
 
 // NewJob creates a new job
@@ -43,36 +38,10 @@ func NewJob(jobType JobType, req *ImportRequest) *Job {
 		Type:      jobType,
 		Request:   req,
 		CreatedAt: time.Now(),
-		done:      make(chan struct{}),
 	}
 }
 
-// Complete marks the job as done with an optional error
-func (j *Job) Complete(err error) {
-	j.mu.Lock()
-	defer j.mu.Unlock()
-	j.err = err
-	close(j.done)
-}
 
-// Wait blocks until the job completes and returns any error
-func (j *Job) Wait(ctx context.Context) error {
-	select {
-	case <-j.done:
-		j.mu.Lock()
-		defer j.mu.Unlock()
-		return j.err
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
-
-// Err returns the job's error (only valid after done is closed)
-func (j *Job) Err() error {
-	j.mu.Lock()
-	defer j.mu.Unlock()
-	return j.err
-}
 
 // JobQueue is a unified, unbounded, thread-safe job queue with a fixed worker pool.
 // It replaces the separate ImportRequest queue, nzbJobQueue, and unbounded goroutine
@@ -207,8 +176,6 @@ func (q *JobQueue) DeleteJob(jobID string) bool {
 	for i, job := range q.jobs {
 		if job.ID == jobID {
 			q.jobs = append(q.jobs[:i], q.jobs[i+1:]...)
-			// Signal the job as cancelled
-			job.Complete(fmt.Errorf("job cancelled"))
 			return true
 		}
 	}

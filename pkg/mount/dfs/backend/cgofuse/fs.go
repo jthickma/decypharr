@@ -264,7 +264,10 @@ func (f *FS) Read(path string, buff []byte, off int64, fh uint64) int {
 		return -fuse.EIO
 	}
 
-	n, err := handle.reader.ReadAt(buff[:size], off)
+	readCtx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	n, err := handle.reader.ReadAtContext(readCtx, buff[:size], off)
 	if err != nil && n == 0 {
 		switch {
 		case errors.Is(err, syscall.EBADF):

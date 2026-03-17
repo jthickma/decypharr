@@ -21,7 +21,12 @@ import (
 var ErrMoreRarDataNeeded = fmt.Errorf("rar: need more data")
 
 var (
-	defaultMaxSnippetSize = 512 * 1024 // 512KB
+	// defaultMaxSnippetSize is used for content-type detection via magic bytes.
+	// TS sync-byte check at offset 188 is the deepest we go, so 512 bytes is ample.
+	defaultMaxSnippetSize = 512
+	// metadataOnly requests the yEnc header (name/size/offsets) without any
+	// decoded payload — the connection is drained and returned to the pool.
+	metadataOnly = 0
 )
 
 // NZBParser provides a simplified, robust NZB parser
@@ -357,8 +362,8 @@ func (p *NZBParser) batchDetectContentTypes(ctx context.Context, unknownFiles []
 		return nil
 	}
 
-	// Use worker pool for parallel processing
-	workers := min(len(unknownFiles), 5) // Max 10 concurrent downloads
+	// Use up to maxConcurrent workers — same budget as the rest of the parser.
+	workers := min(len(unknownFiles), p.maxConcurrent)
 
 	mapper := iter.Mapper[nzbparser.NzbFile, contentResult]{
 		MaxGoroutines: workers, // limit concurrency
@@ -607,14 +612,6 @@ func (p *NZBParser) processFileGroups(ctx context.Context, groups map[string]*Fi
 		}
 	}
 
-	p.logger.Info().
-		Int("rar_files", rarCounts).
-		Int("7z_files", sevenZCounts).
-		Int("zip_files", zipCounts).
-		Int("media_files", mediaCounts).
-		Int("deferred_archives", deferredCounts).
-		Msg("Processed file groups")
-
 	return files
 }
 
@@ -682,8 +679,10 @@ func (p *NZBParser) enrichGroupWithFileInfo(ctx context.Context, group *FileGrou
 
 	go func() {
 		var data *nntp.YencMetadata
+		// GetHeaderPrefix drains the body and returns the connection to the pool;
+		// we only need yEnc metadata (name/size/offsets), not a decoded snippet.
 		err := p.manager.ExecuteWithFailover(ctx, func(conn *nntp.Connection) error {
-			d, e := conn.GetHeader(firstSegment.Id, defaultMaxSnippetSize)
+			d, e := conn.GetHeaderPrefix(firstSegment.Id, metadataOnly)
 			data = d
 			return e
 		})
@@ -694,7 +693,7 @@ func (p *NZBParser) enrichGroupWithFileInfo(ctx context.Context, group *FileGrou
 		go func() {
 			var data *nntp.YencMetadata
 			err := p.manager.ExecuteWithFailover(ctx, func(conn *nntp.Connection) error {
-				d, e := conn.GetHeader(lastSegment.Id, defaultMaxSnippetSize)
+				d, e := conn.GetHeaderPrefix(lastSegment.Id, metadataOnly)
 				data = d
 				return e
 			})
@@ -802,8 +801,10 @@ func (p *NZBParser) detectFileTypeByContent(ctx context.Context, file nzbparser.
 	// Download first segment to check file signature
 	firstSegment := file.Segments[0]
 	var data *nntp.YencMetadata
+	// GetHeaderPrefix returns the connection to the pool after draining;
+	// only a small snippet is needed for magic-byte / filename detection.
 	err := p.manager.ExecuteWithFailover(ctx, func(conn *nntp.Connection) error {
-		d, e := conn.GetHeader(firstSegment.Id, defaultMaxSnippetSize)
+		d, e := conn.GetHeaderPrefix(firstSegment.Id, defaultMaxSnippetSize)
 		data = d
 		return e
 	})

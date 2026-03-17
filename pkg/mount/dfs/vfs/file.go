@@ -1,6 +1,7 @@
 package vfs
 
 import (
+	"context"
 	"errors"
 	"io"
 	"sync/atomic"
@@ -23,8 +24,15 @@ func NewStreamingFile(item *CacheItem) *StreamingFile {
 	}
 }
 
-// ReadAt implements io.ReaderAt
+// ReadAt implements io.ReaderAt using a background context.
+// Prefer ReadAtContext when a caller context is available (e.g. from a FUSE handle).
 func (f *StreamingFile) ReadAt(p []byte, off int64) (int, error) {
+	return f.ReadAtContext(context.Background(), p, off)
+}
+
+// ReadAtContext reads from the file, passing ctx into the download layer so
+// the operation can be interrupted by a read timeout or client disconnect.
+func (f *StreamingFile) ReadAtContext(ctx context.Context, p []byte, off int64) (int, error) {
 	if f.closed.Load() {
 		return 0, errors.New("file closed")
 	}
@@ -40,7 +48,7 @@ func (f *StreamingFile) ReadAt(p []byte, off int64) (int, error) {
 		p = p[:readSize]
 	}
 
-	n, err := f.item.ReadAt(p, off)
+	n, err := f.item.ReadAtContext(ctx, p, off)
 
 	// Handle partial read at EOF
 	if n < int(readSize) && err == nil {

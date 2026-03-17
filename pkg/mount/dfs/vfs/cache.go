@@ -707,8 +707,16 @@ func (item *CacheItem) StopDownloaders() {
 	}
 }
 
-// ReadAt reads from the sparse file, downloading if needed
+// ReadAt reads from the sparse file, downloading if needed.
+// Uses context.Background() — prefer ReadAtContext when a caller context is available.
 func (item *CacheItem) ReadAt(p []byte, off int64) (int, error) {
+	return item.ReadAtContext(context.Background(), p, off)
+}
+
+// ReadAtContext reads from the sparse file, downloading if needed.
+// Respects ctx cancellation so callers (e.g. FUSE handles with a read timeout)
+// are not left blocked indefinitely when the client disconnects.
+func (item *CacheItem) ReadAtContext(ctx context.Context, p []byte, off int64) (int, error) {
 	if off >= item.info.Size {
 		return 0, io.EOF
 	}
@@ -730,14 +738,14 @@ func (item *CacheItem) ReadAt(p []byte, off int64) (int, error) {
 		item.cache.RecordCacheMiss()
 	}
 
-	// Ensure data is on disk (may block)
+	// Ensure data is on disk (may block until downloaded or ctx canceled)
 	item.dlMu.Lock()
 	dls := item.downloaders
 	item.dlMu.Unlock()
 	if dls == nil {
 		return 0, errors.New("downloaders closed")
 	}
-	if err := dls.Download(r); err != nil {
+	if err := dls.Download(ctx, r); err != nil {
 		return 0, fmt.Errorf("download failed: %w", err)
 	}
 
@@ -750,9 +758,6 @@ func (item *CacheItem) ReadAt(p []byte, off int64) (int, error) {
 	f := item.file
 	n, err := f.ReadAt(p, off)
 	item.fileMu.RUnlock()
-	//if n > 0 {
-	//	dropFileCache(f, off, int64(n))
-	//}
 	return n, err
 }
 

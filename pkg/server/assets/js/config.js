@@ -1000,8 +1000,6 @@ class ConfigManager {
         try {
             const config = this.collectFormData();
 
-            console.log(config)
-
             // Validate configuration
             const validation = this.validateConfiguration(config);
             if (!validation.valid) {

@@ -54,9 +54,12 @@ func (fh *Handle) Read(ctx context.Context, dest []byte, off int64) (fuse.ReadRe
 		return nil, syscall.EIO
 	}
 
-	// Read directly - go-fuse already runs each FUSE request in its own goroutine
-	// No need for another goroutine wrapper which causes unnecessary overhead
-	n, err := fh.streamFile.ReadAt(dest, off)
+	// Apply per-read timeout so a stalled download can't block this goroutine
+	// (and therefore go-fuse's goroutine pool) indefinitely.
+	readCtx, cancel := context.WithTimeout(ctx, ReadTimeout)
+	defer cancel()
+
+	n, err := fh.streamFile.ReadAtContext(readCtx, dest, off)
 	if err != nil && !skippableError(err) {
 		switch {
 		case errors.Is(err, syscall.EBADF):

@@ -7,8 +7,6 @@ import (
 
 	"github.com/rs/zerolog"
 	"github.com/sirrobot01/decypharr/internal/nntp"
-	"github.com/sirrobot01/decypharr/internal/retry"
-	"golang.org/x/sync/errgroup"
 )
 
 // SegmentFetcher handles downloading segments from NNTP with deduplication and retry.
@@ -37,9 +35,8 @@ type SegmentFetcher struct {
 	prefetchWg sync.WaitGroup
 
 	// Lifecycle
-	ctx       context.Context
-	cancel    context.CancelFunc
-	closeOnce sync.Once
+	ctx    context.Context
+	cancel context.CancelFunc
 }
 
 // fetchPromise allows multiple goroutines to wait for the same segment download.
@@ -172,55 +169,41 @@ func (sf *SegmentFetcher) doFetch(ctx context.Context, segIdx int) error {
 		timeout = 60 * time.Second
 	}
 
-	// Download with retry
-	err := retry.Do(
-		func() error {
-			downloadCtx, cancel := context.WithTimeout(ctx, timeout)
-			defer cancel()
+	downloadCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 
-			return sf.client.ExecuteWithFailover(downloadCtx, func(conn *nntp.Connection) error {
-				// Get the disk stream writer from cache
-				writer := sf.cache.StreamWriter(segIdx)
-				if writer == nil {
-					return ErrCacheClosed
-				}
+	// ExecuteWithFailover already retries per provider and across providers —
+	// a single call is sufficient.  An outer retry loop would multiply the
+	// total attempts by retries×providers, leading to very long failure times.
+	err := sf.client.ExecuteWithFailover(downloadCtx, func(conn *nntp.Connection) error {
+		// Get the disk stream writer from cache
+		writer := sf.cache.StreamWriter(segIdx)
+		if writer == nil {
+			return ErrCacheClosed
+		}
 
-				// Stream body directly to disk
-				n, err := conn.StreamBody(messageID, writer)
-				if err != nil {
-					return err
-				}
+		// Stream body directly to disk
+		n, err := conn.StreamBody(messageID, writer)
+		if err != nil {
+			return err
+		}
 
-				// Treat zero-byte articles as missing — the article exists on the
-				// server but its body is empty/corrupted after yEnc decoding.
-				if n == 0 {
-					return &nntp.Error{
-						Type:    nntp.ErrorTypeArticleNotFound,
-						Message: "article produced no data after decoding",
-					}
-				}
+		// Treat zero-byte articles as missing — the article exists on the
+		// server but its body is empty/corrupted after yEnc decoding.
+		if n == 0 {
+			return &nntp.Error{
+				Type:    nntp.ErrorTypeArticleNotFound,
+				Message: "article produced no data after decoding",
+			}
+		}
 
-				// Finalize the write (updates cache state)
-				if dw, ok := writer.(*diskStreamWriter); ok {
-					dw.Finalize()
-				}
+		// Finalize the write (updates cache state)
+		if dw, ok := writer.(*diskStreamWriter); ok {
+			dw.Finalize()
+		}
 
-				return nil
-			})
-		},
-		retry.Attempts(uint(sf.config.MaxRetries)),
-		retry.Delay(sf.config.RetryDelay),
-		retry.RetryIf(sf.isRetryable),
-		retry.Context(ctx),
-		retry.OnRetry(func(n uint, err error) {
-			sf.stats.DownloadRetries.Add(1)
-			sf.logger.Debug().
-				Err(err).
-				Int("segment", segIdx).
-				Uint("attempt", n+1).
-				Msg("retrying segment download")
-		}),
-	)
+		return nil
+	})
 
 	if err != nil {
 		sf.stats.DownloadErrors.Add(1)
@@ -230,26 +213,6 @@ func (sf *SegmentFetcher) doFetch(ctx context.Context, segIdx int) error {
 
 	sf.stats.Downloads.Add(1)
 	return nil
-}
-
-// isRetryable determines if an error should trigger a retry.
-func (sf *SegmentFetcher) isRetryable(err error) bool {
-	if err == nil {
-		return false
-	}
-
-	// Article not found is permanent
-	if nntp.IsArticleNotFoundError(err) {
-		return false
-	}
-
-	// Context errors are not retryable
-	if err == context.Canceled || err == context.DeadlineExceeded {
-		return false
-	}
-
-	// All other errors (connection issues, etc.) are retryable
-	return true
 }
 
 // QueuePrefetch adds a segment to the background prefetch queue (non-blocking).
@@ -284,10 +247,7 @@ func (sf *SegmentFetcher) prefetchWorker(id int) {
 		select {
 		case <-sf.ctx.Done():
 			return
-		case segIdx, ok := <-sf.prefetchCh:
-			if !ok {
-				return // Channel closed during shutdown
-			}
+		case segIdx := <-sf.prefetchCh:
 			// Check if still needed
 			state := sf.cache.GetState(segIdx)
 			if state == StateInMemory || state == StateOnDisk {
@@ -310,29 +270,26 @@ func (sf *SegmentFetcher) prefetchWorker(id int) {
 	}
 }
 
-// EnsureSegments fetches all missing segments in the range concurrently.
-// The semaphore inside Fetch already limits NNTP connection usage.
+// EnsureSegments fetches all segments in the range, returning when all are available.
 func (sf *SegmentFetcher) EnsureSegments(ctx context.Context, startSeg, endSeg int) error {
-	g, ctx := errgroup.WithContext(ctx)
+	// First, queue all missing segments
 	for i := startSeg; i <= endSeg; i++ {
 		state := sf.cache.GetState(i)
 		if state != StateInMemory && state != StateOnDisk {
-			g.Go(func() error {
-				return sf.Fetch(ctx, i)
-			})
+			// Need to fetch or wait
+			if err := sf.Fetch(ctx, i); err != nil {
+				return err
+			}
 		}
 	}
-	return g.Wait()
+	return nil
 }
 
 // Close stops all workers and waits for them to finish.
-// Safe to call multiple times.
 func (sf *SegmentFetcher) Close() {
-	sf.closeOnce.Do(func() {
-		sf.cancel()
-		close(sf.prefetchCh)
-		sf.prefetchWg.Wait()
-	})
+	sf.cancel()
+	close(sf.prefetchCh)
+	sf.prefetchWg.Wait()
 }
 
 // Error types

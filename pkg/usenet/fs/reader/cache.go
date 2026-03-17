@@ -1,27 +1,28 @@
 package reader
 
 import (
-	"container/list"
 	"context"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/rs/zerolog"
 )
 
-// SegmentCache provides tiered storage (memory → disk) for segment data
-// with a pin/unpin mechanism to prevent eviction during reads.
+// SegmentCache provides disk storage for segment data with a pin/unpin mechanism
+// to prevent eviction during reads.
 //
 // Key design:
-//   - Segments can be pinned while being read, preventing eviction
+//   - Segments are pinned while being read, preventing eviction
 //   - When unpinned with refcount=0, segments become evictable
-//   - Memory pressure spills segments to disk
-//   - Disk pressure deletes segments (they will be re-downloaded on next read)
-//   - Single sparse file for disk storage (better locality than chunk files)
+//   - Disk pressure evicts oldest unpinned segments (LRU via access timestamps)
+//   - Evicted segments are re-downloaded on next access
+//   - Single sparse file for disk storage (better locality than per-segment files)
 type SegmentCache struct {
 	// Segment metadata
 	segments   []SegmentMeta
@@ -38,17 +39,19 @@ type SegmentCache struct {
 	// Disk storage
 	diskPath string
 	diskFile *os.File
-	diskMu   sync.Mutex
 	onDisk   []atomic.Bool // Whether segment is on disk
 
-	// LRU tracking for eviction
-	lruMu    sync.Mutex
-	lruList  *list.List            // Segment indices in LRU order (oldest first)
-	lruIndex map[int]*list.Element // Fast lookup for LRU updates
+	// Eviction tracking: per-segment last-access timestamp (unix nano).
+	// Lock-free replacement for container/list LRU — no mutex, no heap allocs.
+	accessTime []atomic.Int64
 
 	// Size tracking and limits
 	maxDisk int64
 	curDisk atomic.Int64
+
+	// Async eviction — keeps eviction off the hot write path.
+	evictSignal chan struct{}
+	evictWg     sync.WaitGroup
 
 	// Sharded conditions for waiting
 	shardMu   [numShards]sync.Mutex
@@ -130,30 +133,34 @@ func NewSegmentCache(
 	}
 
 	sc := &SegmentCache{
-		segments:   segments,
-		segCount:   segCount,
-		segOffsets: offsets,
-		totalSize:  totalSize,
-		segLengths: make([]atomic.Int64, segCount),
-		states:     make([]atomic.Uint32, segCount),
-		pinCounts:  make([]atomic.Int32, segCount),
-		errors:     make([]atomic.Pointer[error], segCount),
-		diskPath:   diskPath,
-		diskFile:   diskFile,
-		onDisk:     make([]atomic.Bool, segCount),
-		lruList:    list.New(),
-		lruIndex:   make(map[int]*list.Element),
-		maxDisk:    config.MaxDisk,
-		ctx:        ctx,
-		cancel:     cancel,
-		logger:     logger.With().Str("component", "cache").Logger(),
-		stats:      stats,
+		segments:    segments,
+		segCount:    segCount,
+		segOffsets:  offsets,
+		totalSize:   totalSize,
+		segLengths:  make([]atomic.Int64, segCount),
+		states:      make([]atomic.Uint32, segCount),
+		pinCounts:   make([]atomic.Int32, segCount),
+		errors:      make([]atomic.Pointer[error], segCount),
+		diskPath:    diskPath,
+		diskFile:    diskFile,
+		onDisk:      make([]atomic.Bool, segCount),
+		accessTime:  make([]atomic.Int64, segCount),
+		maxDisk:     config.MaxDisk,
+		evictSignal: make(chan struct{}, 1),
+		ctx:         ctx,
+		cancel:      cancel,
+		logger:      logger.With().Str("component", "cache").Logger(),
+		stats:       stats,
 	}
 
 	// Initialize shard conditions
 	for i := 0; i < numShards; i++ {
 		sc.shardCond[i] = sync.NewCond(&sc.shardMu[i])
 	}
+
+	// Start background evictor
+	sc.evictWg.Add(1)
+	go sc.evictLoop()
 
 	return sc, nil
 }
@@ -242,6 +249,34 @@ func (sc *SegmentCache) ReadInto(segIdx int, buf []byte) (int, bool) {
 	return 0, false
 }
 
+// ReadRangeInto reads only [segOffset, segOffset+length) of a segment directly
+// into buf, skipping the rest of the segment entirely.
+//
+// This is the zero-amplification read path: callers that only need a slice of
+// a segment should use this instead of ReadInto (which reads the full segment).
+// buf must be at least length bytes.
+func (sc *SegmentCache) ReadRangeInto(segIdx int, segOffset, length int64, buf []byte) (int, bool) {
+	if segIdx < 0 || segIdx >= sc.segCount {
+		return 0, false
+	}
+
+	state := SegmentState(sc.states[segIdx].Load())
+
+	if state == StateOnDisk {
+		n, err := sc.loadRangeFromDiskInto(segIdx, segOffset, length, buf)
+		if err != nil {
+			sc.logger.Warn().Err(err).Int("segment", segIdx).Msg("failed to read segment range from disk")
+			sc.stats.CacheMisses.Add(1)
+			return 0, false
+		}
+		sc.stats.CacheHits.Add(1)
+		return n, true
+	}
+
+	sc.stats.CacheMisses.Add(1)
+	return 0, false
+}
+
 // SegmentDataSize returns the stored or expected size of a segment's data.
 func (sc *SegmentCache) SegmentDataSize(segIdx int) int64 {
 	if segIdx < 0 || segIdx >= sc.segCount {
@@ -270,10 +305,8 @@ func (sc *SegmentCache) Put(segIdx int, data []byte) error {
 	// Determine offset in the sparse file
 	offset := sc.segOffsets[segIdx]
 
-	// Write to disk
-	sc.diskMu.Lock()
+	// Write to disk — pwrite at non-overlapping offsets is safe to call concurrently.
 	_, err := sc.diskFile.WriteAt(data, offset)
-	sc.diskMu.Unlock()
 
 	if err != nil {
 		return fmt.Errorf("write segment %d to disk: %w", segIdx, err)
@@ -283,14 +316,12 @@ func (sc *SegmentCache) Put(segIdx int, data []byte) error {
 	sc.curDisk.Add(int64(len(data)))
 	sc.segLengths[segIdx].Store(int64(len(data)))
 	sc.states[segIdx].Store(uint32(StateOnDisk))
-
-	// Add to LRU
-	sc.touchLRU(segIdx)
+	sc.touchSegment(segIdx)
 
 	// Wake any waiters
 	sc.wakeWaiters(segIdx)
 
-	sc.evictIfNeeded()
+	sc.signalEvict()
 	return nil
 }
 
@@ -308,7 +339,6 @@ func (sc *SegmentCache) StreamWriter(segIdx int) io.Writer {
 		offset:    offset,
 		dataStart: seg.SegmentDataStart,
 		maxBytes:  seg.Bytes,
-		diskMu:    &sc.diskMu,
 		cache:     sc,
 		segIdx:    segIdx,
 	}
@@ -322,7 +352,6 @@ type diskStreamWriter struct {
 	maxBytes  int64 // Maximum bytes to write
 	skipped   int64 // Bytes skipped so far
 	written   int64 // Bytes written to disk
-	diskMu    *sync.Mutex
 	cache     *SegmentCache
 	segIdx    int
 }
@@ -357,11 +386,10 @@ func (w *diskStreamWriter) Write(p []byte) (int, error) {
 		writeLen = remaining
 	}
 
-	// Write to disk at the correct offset
+	// Write to disk at the correct offset.
+	// pwrite at non-overlapping segment offsets is safe to call concurrently.
 	writeOffset := w.offset + w.written
-	w.diskMu.Lock()
 	n, err := w.file.WriteAt(p[:writeLen], writeOffset)
-	w.diskMu.Unlock()
 
 	if err != nil {
 		return consumed + n, err
@@ -378,9 +406,9 @@ func (w *diskStreamWriter) Finalize() {
 		w.cache.curDisk.Add(w.written)
 		w.cache.segLengths[w.segIdx].Store(w.written)
 		w.cache.states[w.segIdx].Store(uint32(StateOnDisk))
-		w.cache.touchLRU(w.segIdx)
+		w.cache.touchSegment(w.segIdx)
 		w.cache.wakeWaiters(w.segIdx)
-		w.cache.evictIfNeeded()
+		w.cache.signalEvict()
 	}
 }
 
@@ -402,9 +430,8 @@ func (sc *SegmentCache) loadFromDisk(segIdx int) ([]byte, error) {
 	}
 
 	data := make([]byte, size)
-	sc.diskMu.Lock()
+	// pread at non-overlapping offsets is safe without a mutex.
 	n, err := sc.diskFile.ReadAt(data, offset)
-	sc.diskMu.Unlock()
 
 	if err != nil && err != io.EOF {
 		return nil, fmt.Errorf("read segment %d from disk: %w", segIdx, err)
@@ -426,12 +453,41 @@ func (sc *SegmentCache) loadFromDiskInto(segIdx int, buf []byte) (int, error) {
 		return 0, fmt.Errorf("buffer too small for segment %d: need %d, have %d", segIdx, size, len(buf))
 	}
 
-	sc.diskMu.Lock()
+	// pread at non-overlapping offsets is safe without a mutex.
 	n, err := sc.diskFile.ReadAt(buf[:size], offset)
-	sc.diskMu.Unlock()
 
 	if err != nil && err != io.EOF {
 		return 0, fmt.Errorf("read segment %d from disk: %w", segIdx, err)
+	}
+
+	return n, nil
+}
+
+func (sc *SegmentCache) loadRangeFromDiskInto(segIdx int, segOffset, length int64, buf []byte) (int, error) {
+	if !sc.onDisk[segIdx].Load() {
+		return 0, fmt.Errorf("segment %d not on disk", segIdx)
+	}
+	if segOffset < 0 || length < 0 {
+		return 0, fmt.Errorf("invalid segment range: offset=%d length=%d", segOffset, length)
+	}
+	if int64(len(buf)) < length {
+		return 0, fmt.Errorf("buffer too small for segment %d range: need %d, have %d", segIdx, length, len(buf))
+	}
+
+	size := sc.SegmentDataSize(segIdx)
+	if segOffset > size {
+		return 0, fmt.Errorf("segment offset %d beyond size %d for segment %d", segOffset, size, segIdx)
+	}
+	if segOffset+length > size {
+		length = size - segOffset
+	}
+
+	absoluteOffset := sc.segOffsets[segIdx] + segOffset
+	// pread at non-overlapping offsets is safe without a mutex.
+	n, err := sc.diskFile.ReadAt(buf[:length], absoluteOffset)
+
+	if err != nil && err != io.EOF {
+		return 0, fmt.Errorf("read segment %d range from disk: %w", segIdx, err)
 	}
 
 	return n, nil
@@ -595,65 +651,77 @@ func (sc *SegmentCache) wakeWaiters(segIdx int) {
 	sc.shardMu[shardIdx].Unlock()
 }
 
-// touchLRU updates LRU position for a segment.
-func (sc *SegmentCache) touchLRU(segIdx int) {
-	sc.lruMu.Lock()
-	defer sc.lruMu.Unlock()
-
-	if elem, ok := sc.lruIndex[segIdx]; ok {
-		sc.lruList.MoveToBack(elem)
-		return
-	}
-	elem := sc.lruList.PushBack(segIdx)
-	sc.lruIndex[segIdx] = elem
+// touchSegment records the current time as the last access for a segment.
+// Lock-free replacement for touchLRU — no mutex, no heap allocation.
+func (sc *SegmentCache) touchSegment(segIdx int) {
+	sc.accessTime[segIdx].Store(time.Now().UnixNano())
 }
 
-// removeFromLRU removes a segment from LRU tracking.
-func (sc *SegmentCache) removeFromLRU(segIdx int) {
-	sc.lruMu.Lock()
-	defer sc.lruMu.Unlock()
-	if elem, ok := sc.lruIndex[segIdx]; ok {
-		sc.lruList.Remove(elem)
-		delete(sc.lruIndex, segIdx)
+// signalEvict notifies the background evictor that disk usage may have exceeded
+// the budget. Non-blocking: if a signal is already pending this is a no-op.
+func (sc *SegmentCache) signalEvict() {
+	select {
+	case sc.evictSignal <- struct{}{}:
+	default:
 	}
 }
 
-// evictIfNeeded evicts segments if disk limits are exceeded.
-func (sc *SegmentCache) evictIfNeeded() {
-	for sc.curDisk.Load() > sc.maxDisk {
-		segIdx := sc.findEvictableDisk()
-		if segIdx < 0 {
-			break
+// evictLoop is the background goroutine that drains disk usage when over budget.
+// Running eviction asynchronously keeps it off the hot write path.
+func (sc *SegmentCache) evictLoop() {
+	defer sc.evictWg.Done()
+	for {
+		select {
+		case <-sc.ctx.Done():
+			return
+		case <-sc.evictSignal:
 		}
-		sc.evictFromDisk(segIdx)
-	}
-}
-
-// findEvictableDisk finds the oldest unpinned segment on disk.
-func (sc *SegmentCache) findEvictableDisk() int {
-	sc.lruMu.Lock()
-	defer sc.lruMu.Unlock()
-
-	for elem := sc.lruList.Front(); elem != nil; elem = elem.Next() {
-		segIdx := elem.Value.(int)
-		if sc.pinCounts[segIdx].Load() > 0 {
-			continue // Pinned, skip
-		}
-		state := SegmentState(sc.states[segIdx].Load())
-		if state == StateOnDisk {
-			return segIdx
+		for sc.curDisk.Load() > sc.maxDisk {
+			idx := sc.findEvictable()
+			if idx < 0 {
+				break
+			}
+			sc.evictFromDisk(idx)
 		}
 	}
-	return -1
 }
 
-// evictFromDisk removes a segment from disk cache entirely.
-func (sc *SegmentCache) evictFromDisk(segIdx int) {
-	if !sc.onDisk[segIdx].Load() {
-		return
+// findEvictable returns the index of the oldest unpinned on-disk segment,
+// or -1 if none is evictable. Lock-free O(n) scan over access timestamps.
+// For typical Usenet files (50–500 segments) this is faster than walking a
+// linked list under a global mutex.
+func (sc *SegmentCache) findEvictable() int {
+	oldest := int64(math.MaxInt64)
+	result := -1
+	for i := 0; i < sc.segCount; i++ {
+		if sc.pinCounts[i].Load() > 0 {
+			continue
+		}
+		if SegmentState(sc.states[i].Load()) != StateOnDisk {
+			continue
+		}
+		if t := sc.accessTime[i].Load(); t < oldest {
+			oldest = t
+			result = i
+		}
 	}
+	return result
+}
 
-	// Use actual stored size to keep curDisk accurate (seg.Bytes is only an estimate)
+// evictFromDisk removes a segment from the logical disk cache.
+//
+// Uses CAS to atomically claim the segment (OnDisk → Empty) and rechecks
+// pin count to close the TOCTOU window between findEvictable and eviction.
+func (sc *SegmentCache) evictFromDisk(segIdx int) bool {
+	// Recheck pin — may have been acquired since findEvictable returned.
+	if sc.pinCounts[segIdx].Load() > 0 {
+		return false
+	}
+	// Atomically transition OnDisk → Empty. If another goroutine beat us
+	// (concurrent evictor, or segment was re-fetched), skip cleanly.
+	if !sc.states[segIdx].CompareAndSwap(uint32(StateOnDisk), uint32(StateEmpty)) {
+		return false
+	}
 	size := sc.segLengths[segIdx].Load()
 	if size <= 0 {
 		size = sc.segments[segIdx].Bytes
@@ -661,12 +729,10 @@ func (sc *SegmentCache) evictFromDisk(segIdx int) {
 			size = sc.segOffsets[segIdx+1] - sc.segOffsets[segIdx]
 		}
 	}
-
 	sc.onDisk[segIdx].Store(false)
 	sc.curDisk.Add(-size)
-	sc.states[segIdx].Store(uint32(StateEmpty))
-	sc.removeFromLRU(segIdx)
 	sc.stats.Evictions.Add(1)
+	return true
 }
 
 // SegmentsForRange returns the segment indices that cover the byte range.
@@ -746,6 +812,9 @@ func (sc *SegmentCache) Close() error {
 		sc.shardCond[i].Broadcast()
 		sc.shardMu[i].Unlock()
 	}
+
+	// Wait for background evictor to exit
+	sc.evictWg.Wait()
 
 	// Close disk file and remove directory
 	if sc.diskFile != nil {

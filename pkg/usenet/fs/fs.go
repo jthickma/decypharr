@@ -244,7 +244,6 @@ func (f *FS) createNewReaderForVolume(vol *types.Volume) (PrefetchableReaderAt, 
 	return streamReader, vol.Size, cleanup, nil
 }
 
-
 func closeArchiveClosers(closers []io.Closer) {
 	for _, closer := range closers {
 		if closer != nil {

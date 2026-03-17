@@ -142,9 +142,11 @@ func (d *Dir) setEntryOut(info *manager.FileInfo, out *fuse.EntryOut) {
 
 	if info.IsDir() {
 		out.Attr.Mode = fuse.S_IFDIR | 0755
+		out.Attr.Nlink = 2
 	} else {
 		out.Attr.Mode = fuse.S_IFREG | 0644
 		out.Attr.Size = uint64(info.Size())
+		out.Attr.Nlink = 1
 	}
 
 	out.Attr.Uid = d.config.UID

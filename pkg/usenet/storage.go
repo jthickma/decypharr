@@ -31,7 +31,11 @@ const (
 type NZBStorage struct {
 	metaDir string
 	logger  zerolog.Logger
-	mu      sync.RWMutex // Protects file operations
+	mu      sync.RWMutex // Protects file operations and cached stats
+
+	// Cached stats for fast Stats() reads without filesystem scans.
+	metaCount      int
+	metaTotalBytes int64
 }
 
 // NewNZBStorage creates a new file-based NZB storage
@@ -41,15 +45,50 @@ func NewNZBStorage() (*NZBStorage, error) {
 		return nil, fmt.Errorf("failed to create meta directory: %w", err)
 	}
 
-	return &NZBStorage{
+	s := &NZBStorage{
 		metaDir: metaDir,
 		logger:  logger.New("nzb-storage"),
-	}, nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.recalculateStatsLocked(); err != nil {
+		return nil, fmt.Errorf("failed to initialize NZB stats cache: %w", err)
+	}
+
+	return s, nil
 }
 
 // metaFilePath returns the path for a given NZB ID
 func (s *NZBStorage) metaFilePath(id string) string {
 	return filepath.Join(s.metaDir, id+metaFileExtension)
+}
+
+// recalculateStatsLocked rebuilds cached stats by scanning metadata files.
+// Caller must hold s.mu.
+func (s *NZBStorage) recalculateStatsLocked() error {
+	entries, err := os.ReadDir(s.metaDir)
+	if err != nil {
+		return fmt.Errorf("failed to read meta directory: %w", err)
+	}
+
+	count := 0
+	var totalSize int64
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != metaFileExtension {
+			continue
+		}
+		count++
+		info, err := entry.Info()
+		if err != nil {
+			return fmt.Errorf("failed to stat meta file %s: %w", entry.Name(), err)
+		}
+		totalSize += info.Size()
+	}
+
+	s.metaCount = count
+	s.metaTotalBytes = totalSize
+	return nil
 }
 
 // AddNZB saves an NZB to file storage
@@ -64,6 +103,14 @@ func (s *NZBStorage) AddNZB(nzb *storage.NZB) error {
 	}
 
 	path := s.metaFilePath(nzb.ID)
+	var oldSize int64
+	alreadyExists := false
+	if info, statErr := os.Stat(path); statErr == nil {
+		alreadyExists = true
+		oldSize = info.Size()
+	} else if !os.IsNotExist(statErr) {
+		return fmt.Errorf("failed to stat existing NZB meta file: %w", statErr)
+	}
 
 	// Write atomically using temp file
 	tmpPath := path + ".tmp"
@@ -74,6 +121,14 @@ func (s *NZBStorage) AddNZB(nzb *storage.NZB) error {
 	if err := os.Rename(tmpPath, path); err != nil {
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("failed to rename NZB meta file: %w", err)
+	}
+
+	newSize := int64(len(data))
+	if alreadyExists {
+		s.metaTotalBytes += newSize - oldSize
+	} else {
+		s.metaCount++
+		s.metaTotalBytes += newSize
 	}
 
 	return nil
@@ -107,9 +162,29 @@ func (s *NZBStorage) DeleteNZB(id string) error {
 	defer s.mu.Unlock()
 
 	path := s.metaFilePath(id)
+	var oldSize int64
+	alreadyExists := false
+	if info, statErr := os.Stat(path); statErr == nil {
+		alreadyExists = true
+		oldSize = info.Size()
+	} else if !os.IsNotExist(statErr) {
+		return fmt.Errorf("failed to stat NZB meta file before delete: %w", statErr)
+	}
+
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("failed to delete NZB meta file: %w", err)
 	}
+
+	if alreadyExists {
+		if s.metaCount > 0 {
+			s.metaCount--
+		}
+		s.metaTotalBytes -= oldSize
+		if s.metaTotalBytes < 0 {
+			s.metaTotalBytes = 0
+		}
+	}
+
 	return nil
 }
 
@@ -182,11 +257,9 @@ func (s *NZBStorage) Exists(id string) bool {
 
 // Count returns the number of NZBs in storage
 func (s *NZBStorage) Count() (int, error) {
-	ids, err := s.GetAllNZBIDs()
-	if err != nil {
-		return 0, err
-	}
-	return len(ids), nil
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.metaCount, nil
 }
 
 // Stats returns storage statistics
@@ -194,23 +267,9 @@ func (s *NZBStorage) Stats() map[string]interface{} {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	entries, _ := os.ReadDir(s.metaDir)
-
-	var count int
-	var totalSize int64
-	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != metaFileExtension {
-			continue
-		}
-		count++
-		if info, err := entry.Info(); err == nil {
-			totalSize += info.Size()
-		}
-	}
-
 	return map[string]interface{}{
-		"count":       count,
-		"total_bytes": totalSize,
+		"count":       s.metaCount,
+		"total_bytes": s.metaTotalBytes,
 		"meta_dir":    s.metaDir,
 	}
 }

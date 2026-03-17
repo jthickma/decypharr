@@ -64,20 +64,14 @@ func (m *Manager) AddNewNZB(ctx context.Context, req *ImportRequest) (string, er
 		return "", fmt.Errorf("failed to add nzb to queue: %w", err)
 	}
 
-	// Submit to unified job queue
-	job := NewJob(JobTypeNZB, req)
-	job.Entry = entry
-	job.NZBMeta = meta
-	job.NZBGroups = groups
-	if err := m.SubmitJob(job); err != nil {
-		return "", fmt.Errorf("failed to submit NZB to job queue: %w", err)
-	}
-	m.logger.Debug().Str("name", entry.Name).Msg("NZB submitted to job queue")
+	// Submit job to unbounded worker pool queue (never blocks)
+	m.nzbQueue.Push(&nzbJob{entry: entry, meta: meta, groups: groups})
+	m.logger.Debug().Str("name", entry.Name).Int("queued", m.nzbQueue.Len()).Msg("NZB added to processing queue")
 
 	return meta.ID, nil
 }
 
-func (m *Manager) processNZB(entry *storage.Entry, metadata *storage.NZB) error {
+func (m *Manager) processNZB(ctx context.Context, entry *storage.Entry, metadata *storage.NZB) error {
 	// Add files using logical streamable files
 	for _, file := range metadata.Files {
 		tFile := &storage.File{
@@ -98,6 +92,14 @@ func (m *Manager) processNZB(entry *storage.Entry, metadata *storage.NZB) error 
 	entry.Progress = 1.0
 	entry.UpdatedAt = time.Now()
 	_ = m.queue.Update(entry)
+
+	for _, file := range metadata.Files {
+		go func(f storage.NZBFile) {
+			cacheCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			defer cancel()
+			_ = m.usenet.PreCache(cacheCtx, metadata.ID, f.Name) // This will fetch head and tail of the file
+		}(file)
+	}
 
 	if len(entry.Files) == 0 {
 		return fmt.Errorf("nzb has no files")
@@ -122,7 +124,7 @@ func (m *Manager) processNewNzb(entry *storage.Entry, metadata *storage.NZB, gro
 	}
 
 	metadata = updatedNZB
-	return m.processNZB(entry, metadata)
+	return m.processNZB(ctx, entry, metadata)
 }
 
 // HasUsenet returns true if usenet is configured
