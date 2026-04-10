@@ -265,7 +265,11 @@ func (m *Manager) RefreshLinks(fetcher LinksFetcher) error {
 }
 
 func (m *Manager) Sync(syncer SyncFunc) {
-	wgPool := pool.New().WithMaxGoroutines(m.accounts.Size())
+	workers := m.accounts.Size()
+	if workers == 0 {
+		return
+	}
+	wgPool := pool.New().WithMaxGoroutines(workers)
 	m.accounts.Range(func(key string, acc *Account) bool {
 		wgPool.Go(func() {
 			if err := syncer(acc); err != nil {

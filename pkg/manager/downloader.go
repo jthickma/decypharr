@@ -270,7 +270,10 @@ func (d *Downloader) processTorrentDownload(entry *storage.Entry) error {
 		tasks = append(tasks, downloadTask{file: file, link: downloadLink.DownloadLink})
 	}
 
-	p := pool.New().WithErrors().WithFirstError().WithMaxGoroutines(d.maxDownloads)
+	p := pool.New().WithErrors().WithFirstError()
+	if d.maxDownloads > 0 {
+		p = p.WithMaxGoroutines(d.maxDownloads)
+	}
 	for _, task := range tasks {
 		p.Go(func() error {
 			if err := d.localDownloader(
@@ -323,7 +326,10 @@ func (d *Downloader) processUsenetDownload(entry *storage.Entry) error {
 	// Track per-file progress so we can compute the global total across all files
 	fileProgress := make(map[string]int64)
 
-	p := pool.New().WithErrors().WithFirstError().WithMaxGoroutines(d.maxDownloads)
+	p := pool.New().WithErrors().WithFirstError()
+	if d.maxDownloads > 0 {
+		p = p.WithMaxGoroutines(d.maxDownloads)
+	}
 	for _, file := range files {
 		p.Go(func() error {
 			destPath := filepath.Join(downloadedFolder, file.Name)
