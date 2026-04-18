@@ -125,7 +125,7 @@ func checkBaseWebdav(ctx context.Context, client *http.Client, baseUrl, port str
 	defer drainAndClose(resp)
 
 	authMayBeRequired := cfg.UseAuth && cfg.EnableWebdavAuth
-	return isHealthyStatus(resp.StatusCode, authMayBeRequired, http.StatusOK)
+	return isHealthyStatus(resp.StatusCode, authMayBeRequired, http.StatusOK, http.StatusCreated, http.StatusMultiStatus)
 }
 
 func localURL(port, baseUrl, endpoint string) string {
