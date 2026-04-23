@@ -19,6 +19,7 @@ import (
 	"github.com/sirrobot01/decypharr/internal/request"
 	"github.com/sirrobot01/decypharr/internal/utils"
 	"github.com/sirrobot01/decypharr/pkg/debrid/account"
+	"github.com/sirrobot01/decypharr/pkg/debrid/common"
 	"github.com/sirrobot01/decypharr/pkg/debrid/common/rar"
 	"github.com/sirrobot01/decypharr/pkg/debrid/types"
 	"go.uber.org/ratelimit"
@@ -33,6 +34,7 @@ const (
 )
 
 type RealDebrid struct {
+	common.UnsupportedUsenet
 	Host string `json:"host"`
 
 	APIKey                string

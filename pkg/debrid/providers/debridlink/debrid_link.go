@@ -18,11 +18,13 @@ import (
 	"github.com/sirrobot01/decypharr/internal/request"
 	"github.com/sirrobot01/decypharr/internal/utils"
 	"github.com/sirrobot01/decypharr/pkg/debrid/account"
+	"github.com/sirrobot01/decypharr/pkg/debrid/common"
 	"github.com/sirrobot01/decypharr/pkg/debrid/types"
 	"go.uber.org/ratelimit"
 )
 
 type DebridLink struct {
+	common.UnsupportedUsenet
 	Host             string `json:"host"`
 	APIKey           string
 	accountsManager  *account.Manager

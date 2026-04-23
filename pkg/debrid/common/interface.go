@@ -29,4 +29,13 @@ type Client interface {
 	DeleteLink(dl types.DownloadLink) error
 	SpeedTest(ctx context.Context) types.SpeedTestResult
 	SupportsCheck() bool
+
+	// Usenet capability - providers that don't support return false + no-op stubs
+	SupportsUsenet() bool
+	SubmitNZB(ctx context.Context, nzb []byte, name string, opts types.UsenetSubmitOpts) (*types.UsenetSubmitResult, error)
+	SubmitNZBLink(ctx context.Context, link, name string, opts types.UsenetSubmitOpts) (*types.UsenetSubmitResult, error)
+	GetNZBStatus(id string) (*types.UsenetEntry, error)
+	DeleteNZB(id string) error
+	GetNZBDownloadLink(id string, fileID string) (types.DownloadLink, error)
+	GetUsenetDownloads(offset int) ([]*types.UsenetEntry, error)
 }

@@ -40,6 +40,7 @@ type Torbox struct {
 	accountsManager       *account.Manager
 	autoExpiresLinksAfter time.Duration
 	client                *request.Client
+	usenetCreateLimiter   ratelimit.Limiter
 	logger                zerolog.Logger
 	Profile               *types.Profile
 	config                config.Debrid
@@ -79,6 +80,7 @@ func New(dc config.Debrid, ratelimits map[string]ratelimit.Limiter) (*Torbox, er
 		config:                dc,
 		autoExpiresLinksAfter: autoExpiresLinksAfter,
 		client:                request.New(opts...),
+		usenetCreateLimiter:   ratelimits["usenet_create"],
 		logger:                _log,
 	}
 	return tb, nil

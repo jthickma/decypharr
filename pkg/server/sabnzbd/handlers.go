@@ -7,8 +7,10 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/sirrobot01/decypharr/internal/config"
+	debridTypes "github.com/sirrobot01/decypharr/pkg/debrid/types"
 	"github.com/sirrobot01/decypharr/internal/utils"
 	"github.com/sirrobot01/decypharr/pkg/arr"
 	"github.com/sirrobot01/decypharr/pkg/manager"
@@ -571,6 +573,42 @@ func (s *SABnzbd) addNZBURL(ctx context.Context, url string, arr *arr.Arr, actio
 	if url == "" {
 		return "", fmt.Errorf("URL is required")
 	}
+
+	debrid := s.manager.GetDebridForUsenet()
+	if debrid != nil {
+		opts := debridTypes.UsenetSubmitOpts{
+			PostProcessing: debrid.Config().UsenetPostProcess,
+		}
+
+		result, err := debrid.SubmitNZBLink(ctx, url, "", opts)
+		if err != nil {
+			return "", fmt.Errorf("failed to submit usenet to torbox: %w", err)
+		}
+		nzoID := fmt.Sprintf("torbox-usenet-%s", result.Id)
+
+		entry := &storage.Entry{
+			InfoHash:    nzoID,
+			Name:        "Unknown NZB", // Or we can extract it somehow, maybe TorBox assigns it
+			OriginalFilename: "Unknown NZB",
+			Protocol:    config.ProtocolNZB,
+			State:       storage.EntryStateDownloading,
+			CreatedAt:   time.Now(),
+			UpdatedAt:   time.Now(),
+			Category:    arr.Name,
+			Tags:        []string{"torbox_usenet"},
+			ActiveProvider: "torbox",
+			Action: config.DownloadAction(action),
+			Size: 0,
+			Progress: 0,
+		}
+		err = s.manager.Storage().AddOrUpdate(entry)
+		if err != nil {
+			return "", err
+		}
+
+		return nzoID, nil
+	}
+
 	// Download NZB content
 	filename, content, err := utils.DownloadFile(url)
 	if err != nil {
@@ -591,6 +629,41 @@ func (s *SABnzbd) addNZBFile(ctx context.Context, content []byte, filename strin
 	}
 
 	cfg := config.Get()
+
+	debrid := s.manager.GetDebridForUsenet()
+	if debrid != nil {
+		opts := debridTypes.UsenetSubmitOpts{
+			PostProcessing: debrid.Config().UsenetPostProcess,
+		}
+		result, err := debrid.SubmitNZB(ctx, content, filename, opts)
+		if err != nil {
+			return "", fmt.Errorf("failed to submit usenet to torbox: %w", err)
+		}
+
+		nzoID := fmt.Sprintf("torbox-usenet-%s", result.Id)
+
+		entry := &storage.Entry{
+			InfoHash:    nzoID,
+			Name:        filename,
+			OriginalFilename: filename,
+			Protocol:    config.ProtocolNZB,
+			State:       storage.EntryStateDownloading,
+			CreatedAt:   time.Now(),
+			UpdatedAt:   time.Now(),
+			Category:    arr.Name,
+			Tags:        []string{"torbox_usenet"},
+			ActiveProvider: "torbox",
+			Action: config.DownloadAction(action),
+			Size: 0,
+			Progress: 0,
+		}
+		err = s.manager.Storage().AddOrUpdate(entry)
+		if err != nil {
+			return "", err
+		}
+
+		return nzoID, nil
+	}
 
 	importReq := manager.NewNZBRequest(filename, s.downloadFolder, content, arr, action, cfg.CallbackURL, manager.ImportTypeSABnzbd, cfg.SkipMultiSeason)
 	id, err := s.manager.AddNewNZB(ctx, importReq)
