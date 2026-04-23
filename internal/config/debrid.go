@@ -24,6 +24,8 @@ type Debrid struct {
 	Workers                      int      `json:"workers,omitempty"`
 	AutoExpireLinksAfter         string   `json:"auto_expire_links_after,omitempty"`
 	UserAgent                    string   `json:"user_agent,omitempty"`
+	UsenetBackend                string   `json:"usenet_backend,omitempty"`      // "torbox" | "nntp" | "" (disabled)
+	UsenetPostProcess            int      `json:"usenet_post_process,omitempty"` // default -1
 
 	// Folder
 	Folder        string `json:"folder,omitempty"`          // Deprecated. Use Mount MountPath instead.
@@ -68,6 +70,10 @@ func (c *Config) updateDebrid(d Debrid) Debrid {
 		d.AutoExpireLinksAfter = DefaultAutoExpireLinksAfter
 	}
 
+	if d.UsenetPostProcess == 0 {
+		d.UsenetPostProcess = -1
+	}
+
 	return d
 }
 
@@ -80,6 +86,10 @@ func validateDebrids(debrids []Debrid) error {
 		// Basic field validation
 		if debrid.APIKey == "" {
 			return errors.New("debrid api key is required")
+		}
+
+		if debrid.UsenetBackend == "torbox" && debrid.Provider != "torbox" {
+			return fmt.Errorf("debrid %s has usenet_backend 'torbox' but provider is not 'torbox'", debrid.Name)
 		}
 	}
 

@@ -56,6 +56,18 @@ func (m *Manager) Usenet() *usenet.Usenet {
 	return m.usenet
 }
 
+func (m *Manager) GetDebridForUsenet() debrid.Client {
+	var target debrid.Client
+	m.clients.Range(func(name string, client debrid.Client) bool {
+		if client.SupportsUsenet() && client.Config().UsenetBackend == "torbox" {
+			target = client
+			return false // stop iteration
+		}
+		return true
+	})
+	return target
+}
+
 // GetDebridSpeedTestResult returns stored speed test result for a specific debrid provider
 func (m *Manager) GetDebridSpeedTestResult(provider string) (debridTypes.SpeedTestResult, bool) {
 	return m.debridSpeedTestResults.Load(provider)
