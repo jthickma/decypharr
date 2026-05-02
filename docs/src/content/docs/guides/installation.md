@@ -60,6 +60,16 @@ docker run -d \
   sirrobot01/decypharr:latest
 ```
 
+### GitHub Container Registry
+
+This repository publishes Docker images to GHCR on pushes. For this fork, use:
+
+```bash
+docker pull ghcr.io/jthickma/decypharr:latest
+```
+
+Branch images are also tagged by branch name, and every pushed image receives a `sha-<commit>` tag.
+
 ## Binary
 
 Download the latest release from [GitHub Releases](https://github.com/sirrobot01/decypharr/releases).

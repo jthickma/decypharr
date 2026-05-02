@@ -68,10 +68,10 @@
                             <span>Post Download Action</span>
                         </label>
                         <select class="select w-full" id="downloadAction" name="downloadAction">
-                            <option value="symlink" selected>Create Symlink</option>
-                            <option value="strm" selected>Create STRM Files</option>
-                            <option value="download">Download Files</option>
-                            <option value="none">No Action</option>
+                            <option value="symlink" {{ if eq .DefaultDownloadAction "symlink" }}selected{{ end }}>Create Symlink</option>
+                            <option value="strm" {{ if eq .DefaultDownloadAction "strm" }}selected{{ end }}>Create STRM Files</option>
+                            <option value="download" {{ if eq .DefaultDownloadAction "download" }}selected{{ end }}>Download Files</option>
+                            <option value="none" {{ if eq .DefaultDownloadAction "none" }}selected{{ end }}>No Action</option>
                         </select>
                             <span class="text-sm opacity-70">How to handle files after download completion</span>
                     </div>
@@ -114,6 +114,23 @@
                             {{ end }}
                         </select>
                             <span class="text-sm opacity-70">Choose which debrid service to use</span>
+                    </div>
+                    {{ end }}
+
+                    {{ if .HasNZBProviderChoices }}
+                    <div>
+                        <label class="label" for="nzbProvider">
+                            <span>NZB Provider</span>
+                        </label>
+                        <select class="select w-full" id="nzbProvider" name="nzbProvider">
+                            {{ if .HasLocalUsenet }}
+                            <option value="usenet" {{ if eq .DefaultNZBProvider "usenet" }}selected{{ end }}>Direct Usenet (NNTP)</option>
+                            {{ end }}
+                            {{ range .RemoteUsenetDebrids }}
+                            <option value="{{ .Name }}" {{ if eq $.DefaultNZBProvider .Name }}selected{{ end }}>{{ .Label }}</option>
+                            {{ end }}
+                        </select>
+                            <span class="text-sm opacity-70">Choose where uploaded NZBs are sent</span>
                     </div>
                     {{ end }}
                 </div>

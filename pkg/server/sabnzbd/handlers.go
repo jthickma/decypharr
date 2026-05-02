@@ -577,7 +577,7 @@ func (s *SABnzbd) addNZBURL(ctx context.Context, url string, arr *arr.Arr, actio
 		return "", fmt.Errorf("URL is required")
 	}
 
-	debrid := s.manager.GetDebridForUsenet()
+	debrid := s.manager.GetDebridForUsenet("")
 	if debrid != nil {
 		cfg := config.Get()
 		opts := debridTypes.UsenetSubmitOpts{
@@ -619,7 +619,7 @@ func (s *SABnzbd) addNZBFile(ctx context.Context, content []byte, filename strin
 
 	cfg := config.Get()
 
-	debrid := s.manager.GetDebridForUsenet()
+	debrid := s.manager.GetDebridForUsenet("")
 	if debrid != nil {
 		opts := debridTypes.UsenetSubmitOpts{
 			PostProcessing: debrid.Config().UsenetPostProcess,

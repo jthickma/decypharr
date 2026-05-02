@@ -12,6 +12,8 @@ Decypharr connects directly to NNTP servers to:
 2. Stream segments on-demand for playback
 3. Download and assemble complete files
 
+NZB uploads from the web UI can also be sent to Torbox when a Torbox debrid is configured with `usenet_backend: "torbox"`.
+
 ## Provider Configuration
 
 ### Add Provider
@@ -66,6 +68,31 @@ Decypharr can use multiple providers with priority and failover:
 ```
 
 Lower `priority` = higher preference.
+
+## Selecting an NZB Provider
+
+The web UI shows an **NZB Provider** field on the Download page when NZB handling is available.
+
+- **Direct Usenet (NNTP)** processes NZBs with the `usenet.providers` list.
+- **Torbox** sends NZBs to the configured Torbox account through the Torbox Usenet API.
+
+To enable Torbox as an NZB target:
+
+```json
+{
+  "debrids": [
+    {
+      "provider": "torbox",
+      "name": "Torbox",
+      "api_key": "YOUR_API_KEY",
+      "usenet_backend": "torbox",
+      "usenet_post_process": -1
+    }
+  ]
+}
+```
+
+If both direct NNTP and Torbox are configured, select the desired provider before submitting NZB URLs or files.
 
 ## Performance Tuning
 

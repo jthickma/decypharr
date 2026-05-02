@@ -14,6 +14,7 @@ class DownloadManager {
             rmTrackerUrls: document.getElementById('rmTrackerUrls'),
             downloadFolder: document.getElementById('downloadFolder'),
             debrid: document.getElementById('debrid'),
+            nzbProvider: document.getElementById('nzbProvider'),
             submitBtn: document.getElementById('submitDownload'),
             activeCount: document.getElementById('activeCount'),
             completedCount: document.getElementById('completedCount'),
@@ -39,6 +40,9 @@ class DownloadManager {
         this.refs.downloadUncached.addEventListener('change', () => this.saveOptions());
         this.refs.rmTrackerUrls.addEventListener('change', () => this.saveOptions());
         this.refs.downloadFolder.addEventListener('change', () => this.saveOptions());
+        if (this.refs.nzbProvider) {
+            this.refs.nzbProvider.addEventListener('change', () => this.saveOptions());
+        }
 
         // File input enhancement
         this.refs.torrentFiles.addEventListener('change', (e) => this.handleFileSelection(e, 'torrent'));
@@ -51,17 +55,28 @@ class DownloadManager {
     loadSavedOptions() {
         const savedOptions = {
             category: localStorage.getItem('downloadCategory') || '',
-            action: localStorage.getItem('downloadAction') || 'symlink',
+            action: localStorage.getItem('downloadAction') || this.refs.downloadAction.value || 'symlink',
             uncached: localStorage.getItem('downloadUncached') === 'true',
             rmTrackerUrls: localStorage.getItem('rmTrackerUrls') === 'true',
-            folder: localStorage.getItem('downloadFolder') || this.downloadFolder
+            folder: localStorage.getItem('downloadFolder') || this.downloadFolder,
+            nzbProvider: localStorage.getItem('nzbProvider') || ''
         };
 
         this.refs.arr.value = savedOptions.category;
         this.refs.downloadAction.value = savedOptions.action;
         this.refs.downloadUncached.checked = savedOptions.uncached;
-        this.refs.rmTrackerUrls.checked = savedOptions.rmTrackerUrls;
+        if (!this.refs.rmTrackerUrls.disabled) {
+            this.refs.rmTrackerUrls.checked = savedOptions.rmTrackerUrls;
+        }
         this.refs.downloadFolder.value = savedOptions.folder;
+        if (this.refs.nzbProvider && savedOptions.nzbProvider) {
+            const hasSavedProvider = Array.from(this.refs.nzbProvider.options).some(option => option.value === savedOptions.nzbProvider);
+            if (hasSavedProvider) {
+                this.refs.nzbProvider.value = savedOptions.nzbProvider;
+            } else {
+                localStorage.removeItem('nzbProvider');
+            }
+        }
     }
 
     saveOptions() {
@@ -75,6 +90,9 @@ class DownloadManager {
         }
 
         localStorage.setItem('downloadFolder', this.refs.downloadFolder.value);
+        if (this.refs.nzbProvider) {
+            localStorage.setItem('nzbProvider', this.refs.nzbProvider.value);
+        }
     }
 
     handleMagnetFromURL() {
@@ -146,6 +164,9 @@ class DownloadManager {
 
         if (this.refs.debrid) {
             formData.append('debrid', this.refs.debrid.value);
+        }
+        if (this.refs.nzbProvider) {
+            formData.append('nzbProvider', this.refs.nzbProvider.value);
         }
 
         try {
@@ -277,11 +298,10 @@ class DownloadManager {
         }
 
         if (nzbFiles.length > 0) {
-            // For NZB, only take the first file since we only accept one
             const dataTransfer = new DataTransfer();
-            dataTransfer.items.add(nzbFiles[0]);
+            nzbFiles.forEach(file => dataTransfer.items.add(file));
             this.refs.nzbFile.files = dataTransfer.files;
-            this.handleFileSelection({ target: { files: [nzbFiles[0]] } }, 'nzb');
+            this.handleFileSelection({ target: { files: nzbFiles } }, 'nzb');
         }
 
         if (torrentFiles.length === 0 && nzbFiles.length === 0) {

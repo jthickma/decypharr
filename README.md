@@ -51,6 +51,28 @@ services:
       - apparmor:unconfined
 ```
 
+After the container starts, open `http://localhost:8282` and complete setup.
+
+### NZB Downloads With Torbox
+
+To send NZBs to Torbox instead of direct NNTP, configure a Torbox debrid with `usenet_backend` set to `torbox`:
+
+```json
+{
+  "debrids": [
+    {
+      "provider": "torbox",
+      "name": "Torbox",
+      "api_key": "YOUR_API_KEY",
+      "usenet_backend": "torbox",
+      "usenet_post_process": -1
+    }
+  ]
+}
+```
+
+On the Download page, use **NZB Provider** and select **Torbox** before adding NZB URLs or files. Select **Direct Usenet (NNTP)** when you want Decypharr to process NZBs with configured NNTP providers.
+
 ## Documentation
 
 For complete documentation, please visit our [Documentation](https://docs.decypharr.com).

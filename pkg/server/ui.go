@@ -6,6 +6,7 @@ import (
 	json "github.com/bytedance/sonic"
 
 	"github.com/sirrobot01/decypharr/internal/config"
+	"github.com/sirrobot01/decypharr/pkg/manager"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -135,18 +136,40 @@ func (s *Server) IndexHandler(w http.ResponseWriter, r *http.Request) {
 func (s *Server) DownloadHandler(w http.ResponseWriter, r *http.Request) {
 	cfg := config.Get()
 	debrids := make([]string, 0)
+	type nzbProviderOption struct {
+		Name  string
+		Label string
+	}
+	remoteUsenetDebrids := make([]nzbProviderOption, 0)
 	for _, d := range cfg.Debrids {
 		debrids = append(debrids, d.Name)
+		if d.Provider == "torbox" && d.UsenetBackend == "torbox" {
+			remoteUsenetDebrids = append(remoteUsenetDebrids, nzbProviderOption{
+				Name:  d.Name,
+				Label: d.Name + " (Torbox)",
+			})
+		}
+	}
+
+	hasLocalUsenet := len(cfg.Usenet.Providers) > 0
+	defaultNZBProvider := manager.LocalUsenetProvider
+	if len(remoteUsenetDebrids) > 0 {
+		defaultNZBProvider = remoteUsenetDebrids[0].Name
 	}
 	data := map[string]interface{}{
-		"URLBase":                 cfg.URLBase,
-		"Page":                    "download",
-		"Title":                   "Download",
-		"Debrids":                 debrids,
-		"HasMultiDebrid":          len(debrids) > 1,
-		"downloadFolder":          cfg.DownloadFolder,
-		"alwaysRemoveTrackerURLS": cfg.AlwaysRmTrackerUrls,
-		"SetupError":              cfg.SetupError(),
+		"URLBase":               cfg.URLBase,
+		"Page":                  "download",
+		"Title":                 "Download",
+		"Debrids":               debrids,
+		"HasMultiDebrid":        len(debrids) > 1,
+		"RemoteUsenetDebrids":   remoteUsenetDebrids,
+		"HasLocalUsenet":        hasLocalUsenet,
+		"HasNZBProviderChoices": hasLocalUsenet || len(remoteUsenetDebrids) > 0,
+		"DefaultNZBProvider":    defaultNZBProvider,
+		"DownloadFolder":        cfg.DownloadFolder,
+		"DefaultDownloadAction": string(cfg.DefaultDownloadAction),
+		"AlwaysRmTrackerUrls":   cfg.AlwaysRmTrackerUrls,
+		"SetupError":            cfg.SetupError(),
 	}
 	err := s.templates.ExecuteTemplate(w, "layout", data)
 	if err != nil {

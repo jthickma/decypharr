@@ -69,23 +69,26 @@ curl -H "Authorization: Bearer TOKEN" \
 
 ### POST /api/add
 
-Add torrent or NZB.
+Add torrents or NZBs. This endpoint accepts `multipart/form-data`.
 
 ```bash
 curl -X POST \
   -H "Authorization: Bearer TOKEN" \
-  -F "file=@file.torrent" \
+  -F "files=@file.torrent" \
   http://localhost:8282/api/add
 ```
 
-Or with URL:
+With NZBs:
 
 ```bash
 curl -X POST \
   -H "Authorization: Bearer TOKEN" \
-  -d '{"url": "magnet:?xt=..."}' \
+  -F "nzbFiles=@release.nzb" \
+  -F "nzbProvider=Torbox" \
   http://localhost:8282/api/add
 ```
+
+Use `nzbProvider=usenet` for direct NNTP processing, or set it to the configured Torbox debrid name for Torbox Usenet. If omitted, Decypharr uses a configured Torbox Usenet backend when one is available, otherwise direct NNTP.
 
 ### DELETE /api/torrents
 

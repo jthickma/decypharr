@@ -68,12 +68,20 @@ func NewTorrentRequest(debrid string, downloadFolder string, magnet *utils.Magne
 }
 
 func NewNZBRequest(name, downloadFolder string, nzbContent []byte, arr *arr.Arr, action config.DownloadAction, callBackUrl string, importType ImportType, skipMultiSeason bool) *ImportRequest {
+	return NewNZBRequestWithProvider(name, downloadFolder, nzbContent, arr, action, callBackUrl, importType, skipMultiSeason, LocalUsenetProvider)
+}
+
+func NewNZBRequestWithProvider(name, downloadFolder string, nzbContent []byte, arr *arr.Arr, action config.DownloadAction, callBackUrl string, importType ImportType, skipMultiSeason bool, provider string) *ImportRequest {
+	if provider == "" {
+		provider = LocalUsenetProvider
+	}
+
 	return &ImportRequest{
 		Name:            name,
 		Id:              uuid.New().String(),
 		Status:          "started",
 		DownloadFolder:  downloadFolder,
-		SelectedDebrid:  "usenet", // NZB imports always use usenet
+		SelectedDebrid:  provider,
 		NZBContent:      nzbContent,
 		Arr:             arr,
 		Action:          action,

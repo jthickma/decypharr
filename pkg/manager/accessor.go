@@ -56,7 +56,18 @@ func (m *Manager) Usenet() *usenet.Usenet {
 	return m.usenet
 }
 
-func (m *Manager) GetDebridForUsenet() debrid.Client {
+func (m *Manager) GetDebridForUsenet(providerName string) debrid.Client {
+	if providerName != "" {
+		client, ok := m.clients.Load(providerName)
+		if !ok || client == nil {
+			return nil
+		}
+		if client.SupportsUsenet() && client.Config().UsenetBackend == "torbox" {
+			return client
+		}
+		return nil
+	}
+
 	var target debrid.Client
 	m.clients.Range(func(name string, client debrid.Client) bool {
 		if client.SupportsUsenet() && client.Config().UsenetBackend == "torbox" {

@@ -38,6 +38,7 @@ func (s *Server) handleAddContent(w http.ResponseWriter, r *http.Request) {
 	arrName := r.FormValue("arr")
 	action := r.FormValue("action")
 	debridName := r.FormValue("debrid")
+	nzbProvider := strings.TrimSpace(r.FormValue("nzbProvider"))
 	callbackUrl := r.FormValue("callbackUrl")
 	downloadFolder := r.FormValue("downloadFolder")
 	if downloadFolder == "" {
@@ -172,8 +173,23 @@ func (s *Server) handleAddContent(w http.ResponseWriter, r *http.Request) {
 			return importReq
 
 		case "nzb":
-			importReq := manager.NewNZBRequest(task.name, downloadFolder, task.nzbContent, _arr, config.DownloadAction(action), callbackUrl, manager.ImportTypeAPI, skipMultiSeason)
-			if debrid := s.manager.GetDebridForUsenet(); debrid != nil {
+			selectedNZBProvider := nzbProvider
+			if selectedNZBProvider == "" {
+				if debrid := s.manager.GetDebridForUsenet(""); debrid != nil {
+					selectedNZBProvider = debrid.Config().Name
+				} else {
+					selectedNZBProvider = manager.LocalUsenetProvider
+				}
+			}
+
+			importReq := manager.NewNZBRequestWithProvider(task.name, downloadFolder, task.nzbContent, _arr, config.DownloadAction(action), callbackUrl, manager.ImportTypeAPI, skipMultiSeason, selectedNZBProvider)
+			if selectedNZBProvider != manager.LocalUsenetProvider {
+				debrid := s.manager.GetDebridForUsenet(selectedNZBProvider)
+				if debrid == nil {
+					importReq.Error = fmt.Sprintf("selected NZB provider %q is not a Torbox Usenet provider", selectedNZBProvider)
+					importReq.Status = "error"
+					return importReq
+				}
 				opts := debridTypes.UsenetSubmitOpts{
 					PostProcessing: debrid.Config().UsenetPostProcess,
 				}
