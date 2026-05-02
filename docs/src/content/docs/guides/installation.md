@@ -12,7 +12,13 @@ Create a `docker-compose.yml`:
 ```yaml
 services:
   decypharr:
-    image: cy01/blackhole:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VERSION: local
+        CHANNEL: dev
+    image: decypharr:local
     container_name: decypharr
     ports:
       - "8282:8282"
@@ -31,7 +37,7 @@ services:
 Run:
 
 ```bash
-docker compose up -d
+docker compose up --build -d
 ```
 
 Access at `http://localhost:8282`

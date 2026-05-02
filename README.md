@@ -29,7 +29,13 @@ Decypharr provides a unified interface for Sonarr, Radarr, and other *Arr applic
 ```yaml
 services:
   decypharr:
-    image: cy01/blackhole:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VERSION: local
+        CHANNEL: dev
+    image: decypharr:local
     container_name: decypharr
     ports:
       - "8282:8282"
