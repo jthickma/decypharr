@@ -166,7 +166,10 @@ func (tb *Torbox) convertToUsenetEntry(data *UsenetInfo) *types.UsenetEntry {
 func (tb *Torbox) GetNZBStatus(id string) (*types.UsenetEntry, error) {
 	var res UsenetInfoResponse
 
-	resp, err := tb.doGet("/api/usenet/mylist/", map[string]string{"id": id}, &res)
+	resp, err := tb.doGet("/api/usenet/mylist", map[string]string{
+		"id":           id,
+		"bypass_cache": "true",
+	}, &res)
 	if err != nil {
 		return nil, err
 	}
@@ -183,9 +186,13 @@ func (tb *Torbox) GetNZBStatus(id string) (*types.UsenetEntry, error) {
 }
 
 func (tb *Torbox) DeleteNZB(id string) error {
-	payload := map[string]string{"usenet_id": id, "action": "Delete"}
+	payload := map[string]any{
+		"usenet_id": id,
+		"operation": "delete",
+		"all":       false,
+	}
 
-	resp, err := tb.doDelete(fmt.Sprintf("/api/usenet/controlusenetdownload/%s", id), payload)
+	resp, err := tb.doPostJSON("/api/usenet/controlusenetdownload", payload, nil)
 	if err != nil {
 		return err
 	}
@@ -223,7 +230,10 @@ func (tb *Torbox) GetNZBDownloadLink(id string, fileID string) (types.DownloadLi
 func (tb *Torbox) GetUsenetDownloads(offset int) ([]*types.UsenetEntry, error) {
 	var res UsenetListResponse
 
-	resp, err := tb.doGet("/api/usenet/mylist", map[string]string{"offset": strconv.Itoa(offset)}, &res)
+	resp, err := tb.doGet("/api/usenet/mylist", map[string]string{
+		"offset":       strconv.Itoa(offset),
+		"bypass_cache": "true",
+	}, &res)
 	if err != nil {
 		return nil, err
 	}

@@ -15,6 +15,7 @@ import (
 	"github.com/sirrobot01/decypharr/internal/config"
 	"github.com/sirrobot01/decypharr/internal/utils"
 	"github.com/sirrobot01/decypharr/pkg/arr"
+	debridTypes "github.com/sirrobot01/decypharr/pkg/debrid/types"
 	"github.com/sirrobot01/decypharr/pkg/manager"
 	repairpkg "github.com/sirrobot01/decypharr/pkg/repair"
 	"github.com/sirrobot01/decypharr/pkg/storage"
@@ -172,6 +173,27 @@ func (s *Server) handleAddContent(w http.ResponseWriter, r *http.Request) {
 
 		case "nzb":
 			importReq := manager.NewNZBRequest(task.name, downloadFolder, task.nzbContent, _arr, config.DownloadAction(action), callbackUrl, manager.ImportTypeAPI, skipMultiSeason)
+			if debrid := s.manager.GetDebridForUsenet(); debrid != nil {
+				opts := debridTypes.UsenetSubmitOpts{
+					PostProcessing: debrid.Config().UsenetPostProcess,
+				}
+				result, err := debrid.SubmitNZB(ctx, task.nzbContent, task.name, opts)
+				if err != nil {
+					s.logger.Error().Err(err).Str("source", task.source).Msg("Failed to submit NZB to debrid usenet")
+					importReq.Error = err.Error()
+					importReq.Status = "error"
+					return importReq
+				}
+				entry := manager.NewRemoteUsenetEntry(debrid, result, task.name, downloadFolder, _arr, config.DownloadAction(action), callbackUrl, skipMultiSeason)
+				if err := s.manager.Queue().Add(entry); err != nil {
+					s.logger.Error().Err(err).Str("source", task.source).Msg("Failed to queue debrid NZB")
+					importReq.Error = err.Error()
+					importReq.Status = "error"
+					return importReq
+				}
+				importReq.Id = entry.InfoHash
+				return importReq
+			}
 			nzoID, err := s.manager.AddNewNZB(ctx, importReq)
 			if err != nil {
 				s.logger.Error().Err(err).Str("source", task.source).Msg("Failed to add NZB")

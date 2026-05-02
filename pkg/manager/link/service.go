@@ -9,6 +9,7 @@ import (
 
 	"github.com/puzpuzpuz/xsync/v4"
 	"github.com/rs/zerolog"
+	"github.com/sirrobot01/decypharr/internal/config"
 	"github.com/sirrobot01/decypharr/internal/customerror"
 	"github.com/sirrobot01/decypharr/internal/utils"
 	debrid "github.com/sirrobot01/decypharr/pkg/debrid/common"
@@ -213,11 +214,18 @@ func (s *Service) fetchLink(ctx context.Context, entry *storage.Entry, filename 
 		Deleted:   file.Deleted,
 	}
 
-	// This uses account-level caching internally
-	downloadLink, err := client.GetDownloadLink(placement.ID, debridFile)
+	var downloadLink types.DownloadLink
+	if entry.Protocol == config.ProtocolNZB && entry.ActiveProvider != "usenet" && client.SupportsUsenet() {
+		downloadLink, err = client.GetNZBDownloadLink(placement.ID, placementFile.Id)
+	} else {
+		// This uses account-level caching internally for torrent providers.
+		downloadLink, err = client.GetDownloadLink(placement.ID, debridFile)
+	}
 	if err != nil {
 		return downloadLink, err
 	}
+	downloadLink.Filename = file.Name
+	downloadLink.Size = file.Size
 
 	if downloadLink.Empty() {
 		// Let's try to reinsert the entry

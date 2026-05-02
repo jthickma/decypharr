@@ -35,7 +35,6 @@ func (m *Manager) syncTorrents(ctx context.Context) {
 		Msg("Initial sync of torrents from debrid clients completed")
 }
 
-
 // Refresh configuration constants
 const (
 	refreshBatchSize       = 500
@@ -436,6 +435,18 @@ func (m *Manager) refreshTorrent(infohash string) (*storage.Entry, error) {
 		return torrent, nil
 	}
 
+	if IsRemoteUsenetEntry(torrent) && client.SupportsUsenet() {
+		remote, err := client.GetNZBStatus(placement.ID)
+		if err != nil {
+			return nil, err
+		}
+		m.updateRemoteNZBEntry(torrent, placement, remote)
+		if err := m.storage.AddOrUpdate(torrent); err != nil {
+			return nil, err
+		}
+		return torrent, nil
+	}
+
 	// GetReader updated torrent info from debrid
 	debridTorrent, err := client.GetTorrent(placement.ID)
 	if err != nil {
@@ -485,4 +496,3 @@ func isComplete(files map[string]types.File) bool {
 	}
 	return true
 }
-

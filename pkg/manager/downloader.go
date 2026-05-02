@@ -238,7 +238,7 @@ func (d *Downloader) processSymlink(entry *storage.Entry, mountPath string) erro
 // For NZBs: uses parallel NNTP segment download
 func (d *Downloader) processDownload(entry *storage.Entry) error {
 	// Check if this is a usenet entry
-	if entry.IsNZB() {
+	if entry.IsNZB() && !IsRemoteUsenetEntry(entry) {
 		return d.processUsenetDownload(entry)
 	}
 	return d.processTorrentDownload(entry)

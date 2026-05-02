@@ -54,6 +54,7 @@ func (m *Manager) createClient(dc config.Debrid) (debrid.Client, error) {
 	rateLimits["main"] = mainRL
 	rateLimits["repair"] = repairRL
 	rateLimits["download"] = downloadRL
+	rateLimits["usenet_create"] = mainRL
 
 	switch dc.Provider {
 	case "realdebrid":

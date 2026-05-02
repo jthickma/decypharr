@@ -157,6 +157,38 @@ func (tb *Torbox) doPostForm(endpoint string, formData map[string]string, result
 	return resp, nil
 }
 
+// doPostJSON performs a POST request with a JSON body.
+func (tb *Torbox) doPostJSON(endpoint string, payload interface{}, result interface{}) (*http.Response, error) {
+	var body io.Reader
+	if payload != nil {
+		data, err := json.Marshal(payload)
+		if err != nil {
+			return nil, err
+		}
+		body = bytes.NewReader(data)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, tb.Host+endpoint, body)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := tb.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if result != nil && resp.StatusCode >= 200 && resp.StatusCode < 300 && resp.ContentLength != 0 {
+		if err := json.ConfigDefault.NewDecoder(resp.Body).Decode(result); err != nil {
+			return resp, err
+		}
+	}
+
+	return resp, nil
+}
+
 // doDelete performs a DELETE request
 func (tb *Torbox) doDelete(endpoint string, payload interface{}) (*http.Response, error) {
 	var body io.Reader
@@ -720,7 +752,6 @@ func (tb *Torbox) SpeedTest(ctx context.Context) types.SpeedTestResult {
 
 	return result
 }
-
 
 func (tb *Torbox) SupportsCheck() bool {
 	return false

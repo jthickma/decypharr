@@ -100,6 +100,19 @@ func (m *Manager) processQueuedEntries() {
 }
 
 func (m *Manager) processQueuedNZB(entry *storage.Entry) {
+	if IsRemoteUsenetEntry(entry) {
+		m.processQueuedRemoteNZB(entry)
+		return
+	}
+
+	if m.usenet == nil {
+		err := fmt.Errorf("usenet client not configured")
+		m.logger.Error().Err(err).Str("name", entry.Name).Msg("Error processing NZB")
+		entry.MarkAsError(err)
+		_ = m.queue.Update(entry)
+		return
+	}
+
 	// Check if the nzb is already processed
 	metadata, err := m.usenet.GetNZB(entry.InfoHash)
 	if err != nil {
@@ -135,6 +148,113 @@ func (m *Manager) processQueuedNZB(entry *storage.Entry) {
 		entry.MarkAsError(fmt.Errorf("unknown nzb status: %s", metadata.Status))
 		_ = m.queue.Update(entry)
 		return
+	}
+}
+
+func (m *Manager) processQueuedRemoteNZB(entry *storage.Entry) {
+	placement := entry.GetActiveProvider()
+	if placement == nil {
+		m.logger.Error().Str("name", entry.Name).Msg("No active placement found for remote NZB")
+		entry.MarkAsError(fmt.Errorf("no active placement found"))
+		_ = m.queue.Update(entry)
+		return
+	}
+
+	client := m.ProviderClient(entry.ActiveProvider)
+	if client == nil || !client.SupportsUsenet() {
+		err := fmt.Errorf("usenet-capable debrid client not found: %s", entry.ActiveProvider)
+		m.logger.Error().Err(err).Str("name", entry.Name).Msg("Error processing remote NZB")
+		entry.MarkAsError(err)
+		_ = m.queue.Update(entry)
+		return
+	}
+
+	remote, err := client.GetNZBStatus(placement.ID)
+	if err != nil {
+		m.logger.Error().Err(err).Str("name", entry.Name).Msg("Error checking remote NZB status")
+		entry.MarkAsError(err)
+		_ = m.queue.Update(entry)
+		return
+	}
+
+	m.updateRemoteNZBEntry(entry, placement, remote)
+	_ = m.queue.Update(entry)
+
+	switch remote.Status {
+	case debridTypes.UsenetStatusFailed:
+		err := fmt.Errorf("remote nzb failed on debrid: %s", entry.ActiveProvider)
+		entry.MarkAsError(err)
+		_ = m.queue.Update(entry)
+	case debridTypes.UsenetStatusCompleted:
+		if len(entry.Files) == 0 {
+			err := fmt.Errorf("remote nzb completed without files")
+			entry.MarkAsError(err)
+			_ = m.queue.Update(entry)
+			return
+		}
+		go m.processAction(entry)
+	}
+}
+
+func (m *Manager) updateRemoteNZBEntry(entry *storage.Entry, placement *storage.ProviderEntry, remote *debridTypes.UsenetEntry) {
+	if remote.Name != "" {
+		entry.Name = remote.Name
+		entry.OriginalFilename = remote.Name
+		entry.ContentPath = entry.DownloadPath()
+	}
+	if remote.Size > 0 {
+		entry.Size = remote.Size
+		entry.Bytes = remote.Size
+	}
+	entry.Progress = remote.Progress / 100.0
+	entry.Speed = remote.DownloadSpeed
+	entry.UpdatedAt = time.Now()
+	entry.Status = debridTypes.TorrentStatusDownloading
+	entry.State = storage.EntryStateDownloading
+
+	placement.Progress = entry.Progress
+	placement.Status = debridTypes.TorrentStatusDownloading
+	if remote.Status == debridTypes.UsenetStatusCompleted {
+		entry.Progress = 1.0
+		entry.Status = debridTypes.TorrentStatusDownloaded
+		placement.Progress = 1.0
+		placement.Status = debridTypes.TorrentStatusDownloaded
+		now := time.Now()
+		placement.DownloadedAt = &now
+	} else if remote.Status == debridTypes.UsenetStatusFailed {
+		entry.Status = debridTypes.TorrentStatusError
+		placement.Status = debridTypes.TorrentStatusError
+	}
+
+	if entry.Files == nil {
+		entry.Files = make(map[string]*storage.File)
+	}
+	if placement.Files == nil {
+		placement.Files = make(map[string]*storage.ProviderFile)
+	}
+
+	totalSize := int64(0)
+	for _, remoteFile := range remote.Files {
+		if remoteFile.Name == "" {
+			continue
+		}
+		totalSize += remoteFile.Size
+		entry.Files[remoteFile.Name] = &storage.File{
+			Name:     remoteFile.Name,
+			Size:     remoteFile.Size,
+			InfoHash: entry.InfoHash,
+			Path:     remoteFile.Path,
+			AddedOn:  entry.AddedOn,
+		}
+		placement.Files[remoteFile.Name] = &storage.ProviderFile{
+			Id:   remoteFile.Id,
+			Link: remoteFile.Link,
+			Path: remoteFile.Path,
+		}
+	}
+	if entry.Size == 0 && totalSize > 0 {
+		entry.Size = totalSize
+		entry.Bytes = totalSize
 	}
 }
 

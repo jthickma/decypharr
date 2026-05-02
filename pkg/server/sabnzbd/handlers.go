@@ -7,12 +7,11 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/sirrobot01/decypharr/internal/config"
-	debridTypes "github.com/sirrobot01/decypharr/pkg/debrid/types"
 	"github.com/sirrobot01/decypharr/internal/utils"
 	"github.com/sirrobot01/decypharr/pkg/arr"
+	debridTypes "github.com/sirrobot01/decypharr/pkg/debrid/types"
 	"github.com/sirrobot01/decypharr/pkg/manager"
 	"github.com/sirrobot01/decypharr/pkg/storage"
 )
@@ -87,10 +86,14 @@ func (s *SABnzbd) handleDelete(w http.ResponseWriter, r *http.Request) {
 
 	var successCount int
 	var errors []string
+	cleanup := func(entry *storage.Entry) error {
+		go s.manager.RemoveTorrentPlacements(entry)
+		return nil
+	}
 
 	if nzoIDs == "failed" {
 		// Delete all failed entries
-		if err := s.manager.Queue().DeleteWhere(cat, config.ProtocolNZB, storage.EntryStateError, nil, nil); err != nil {
+		if err := s.manager.Queue().DeleteWhere(cat, config.ProtocolNZB, storage.EntryStateError, nil, cleanup); err != nil {
 			s.logger.Error().
 				Err(err).
 				Msg("Failed to delete all failed NZBs")
@@ -111,7 +114,7 @@ func (s *SABnzbd) handleDelete(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Use atomic delete operation
-		if err := s.manager.Queue().Delete(nzoID, nil); err != nil {
+		if err := s.manager.Queue().Delete(nzoID, cleanup); err != nil {
 			errors = append(errors, fmt.Sprintf("Failed to delete %s: %v", nzoID, err))
 		} else {
 			successCount++
@@ -576,6 +579,7 @@ func (s *SABnzbd) addNZBURL(ctx context.Context, url string, arr *arr.Arr, actio
 
 	debrid := s.manager.GetDebridForUsenet()
 	if debrid != nil {
+		cfg := config.Get()
 		opts := debridTypes.UsenetSubmitOpts{
 			PostProcessing: debrid.Config().UsenetPostProcess,
 		}
@@ -584,29 +588,14 @@ func (s *SABnzbd) addNZBURL(ctx context.Context, url string, arr *arr.Arr, actio
 		if err != nil {
 			return "", fmt.Errorf("failed to submit usenet to torbox: %w", err)
 		}
-		nzoID := fmt.Sprintf("torbox-usenet-%s", result.Id)
 
-		entry := &storage.Entry{
-			InfoHash:    nzoID,
-			Name:        "Unknown NZB", // Or we can extract it somehow, maybe TorBox assigns it
-			OriginalFilename: "Unknown NZB",
-			Protocol:    config.ProtocolNZB,
-			State:       storage.EntryStateDownloading,
-			CreatedAt:   time.Now(),
-			UpdatedAt:   time.Now(),
-			Category:    arr.Name,
-			Tags:        []string{"torbox_usenet"},
-			ActiveProvider: "torbox",
-			Action: config.DownloadAction(action),
-			Size: 0,
-			Progress: 0,
-		}
-		err = s.manager.Storage().AddOrUpdate(entry)
+		entry := manager.NewRemoteUsenetEntry(debrid, result, "Unknown NZB", s.downloadFolder, arr, action, cfg.CallbackURL, cfg.SkipMultiSeason)
+		err = s.manager.Queue().Add(entry)
 		if err != nil {
 			return "", err
 		}
 
-		return nzoID, nil
+		return entry.InfoHash, nil
 	}
 
 	// Download NZB content
@@ -640,29 +629,13 @@ func (s *SABnzbd) addNZBFile(ctx context.Context, content []byte, filename strin
 			return "", fmt.Errorf("failed to submit usenet to torbox: %w", err)
 		}
 
-		nzoID := fmt.Sprintf("torbox-usenet-%s", result.Id)
-
-		entry := &storage.Entry{
-			InfoHash:    nzoID,
-			Name:        filename,
-			OriginalFilename: filename,
-			Protocol:    config.ProtocolNZB,
-			State:       storage.EntryStateDownloading,
-			CreatedAt:   time.Now(),
-			UpdatedAt:   time.Now(),
-			Category:    arr.Name,
-			Tags:        []string{"torbox_usenet"},
-			ActiveProvider: "torbox",
-			Action: config.DownloadAction(action),
-			Size: 0,
-			Progress: 0,
-		}
-		err = s.manager.Storage().AddOrUpdate(entry)
+		entry := manager.NewRemoteUsenetEntry(debrid, result, filename, s.downloadFolder, arr, action, cfg.CallbackURL, cfg.SkipMultiSeason)
+		err = s.manager.Queue().Add(entry)
 		if err != nil {
 			return "", err
 		}
 
-		return nzoID, nil
+		return entry.InfoHash, nil
 	}
 
 	importReq := manager.NewNZBRequest(filename, s.downloadFolder, content, arr, action, cfg.CallbackURL, manager.ImportTypeSABnzbd, cfg.SkipMultiSeason)

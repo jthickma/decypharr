@@ -150,7 +150,7 @@ func (m *Manager) Stream(ctx context.Context, entry *storage.Entry, filename str
 	}
 
 	// Route based on protocol
-	if entry.Protocol == config.ProtocolNZB {
+	if entry.Protocol == config.ProtocolNZB && !IsRemoteUsenetEntry(entry) {
 		return m.streamUsenet(ctx, entry, filename, start, end, writer, onReady)
 	}
 
@@ -172,6 +172,9 @@ func (m *Manager) TrackStream(entry *storage.Entry, filename, client string) str
 	var source, debrid string
 	if entry.Protocol == config.ProtocolNZB {
 		source = "nzb"
+		if IsRemoteUsenetEntry(entry) {
+			debrid = entry.ActiveProvider
+		}
 	} else {
 		source = "torrent"
 		debrid = entry.ActiveProvider
